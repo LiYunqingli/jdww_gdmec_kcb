@@ -1,0 +1,42 @@
+# ---------- 运行时数据（含会话 Cookie，绝对不能提交） ----------
+data/
+*.session
+*.cookies
+
+# ---------- 逆向 / 抓包 / 调试脚本（含真实账号密码与响应样本） ----------
+probe/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- 日志与临时文件 ----------
+*.log
+logs/
+*.tmp
+*.bak
+*.swp
+~$*
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 其它 ----------
+*.sqlite3
+*.db
