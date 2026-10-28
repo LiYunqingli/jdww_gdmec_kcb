@@ -1,88 +1,219 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="system" data-scheme="light">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>我的课表</title>
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F0F1EC">
+<script>
+/* 先定配色，避免首屏闪白 */
+(function () {
+  try {
+    var t = localStorage.getItem("kcb.theme") || "system";
+    var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+    var r = document.documentElement;
+    r.dataset.theme = t;
+    r.dataset.scheme = dark ? "dark" : "light";
+  } catch (e) {}
+})();
+</script>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5/500.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5/600.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5/600.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
-<!-- ============ 登录 ============ -->
-<section id="login-view" class="login-wrap">
-  <div class="login-card">
-    <div class="logo">课</div>
-    <h1>我的课表</h1>
-    <p class="sub">广东机电职业技术学院 · 统一身份认证登录</p>
+<svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1"/><path d="M3 9h18"/><path d="M9 3v18"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 5-8 11-8 11s-8-6-8-11a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="2.6"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-building" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 21v-3h6v3"/><path d="M9 7h.01"/><path d="M15 7h.01"/><path d="M9 11h.01"/><path d="M15 11h.01"/><path d="M9 15h.01"/><path d="M15 15h.01"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="1"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M8 14h3"/><path d="M8 17.5h6"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="m16 3-2 18"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M20 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2Z"/></symbol>
+  <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+</svg>
 
-    <div class="tabs">
-      <button class="tab active" data-mode="pwd" type="button">账号密码</button>
-      <button class="tab" data-mode="cookie" type="button">Cookie 登录</button>
+<!-- ══════════════ 登录 ══════════════ -->
+<section id="login-view" class="login">
+  <p class="login-meta"><span>广东机电职业技术学院</span><span>课表代理</span></p>
+
+  <div class="login-card">
+    <div class="band" aria-hidden="true">
+      <i class="k1"></i><i class="k2"></i><i class="k3"></i><i class="k4"></i><i class="k5"></i><i class="k6"></i><i class="k7"></i>
     </div>
 
-    <form id="pwd-form" autocomplete="on">
-      <label>学号
-        <input id="username" name="username" autocomplete="username" placeholder="例如 25120321">
-      </label>
-      <label>密码
-        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="统一身份认证密码">
-      </label>
-      <button class="btn primary" type="submit" id="pwd-submit">登录</button>
-    </form>
+    <div class="login-body">
+      <div class="mark" aria-hidden="true">课</div>
+      <h1>我的课表</h1>
+      <p class="login-sub">用统一身份认证登录，按周查课。</p>
 
-    <form id="cookie-form" class="hidden">
-      <label>Cookie
-        <textarea id="cookie" rows="4" spellcheck="false"
-          placeholder="浏览器登录教务系统后，F12 → Network → 任意请求 → Request Headers 里的 Cookie 整行"></textarea>
-      </label>
-      <button class="btn primary" type="submit" id="cookie-submit">用 Cookie 登录</button>
-    </form>
+      <div class="seg seg-tabs" role="tablist" aria-label="登录方式">
+        <button class="seg-item is-on" data-mode="pwd" type="button" role="tab" aria-selected="true">账号密码</button>
+        <button class="seg-item" data-mode="cookie" type="button" role="tab" aria-selected="false">Cookie</button>
+      </div>
 
-    <p id="login-msg" class="msg"></p>
+      <form id="pwd-form" class="form" autocomplete="on">
+        <label class="field">
+          <span class="field-label">学号</span>
+          <input id="username" name="username" autocomplete="username" inputmode="numeric" placeholder="25120321">
+        </label>
+        <label class="field">
+          <span class="field-label">密码</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" placeholder="统一身份认证密码">
+        </label>
+        <button class="btn btn-primary" type="submit" id="pwd-submit">
+          <span>登录</span>
+          <svg class="ic" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+        </button>
+      </form>
+
+      <form id="cookie-form" class="form" hidden>
+        <label class="field">
+          <span class="field-label">Cookie</span>
+          <textarea id="cookie" rows="4" spellcheck="false" placeholder="浏览器登录教务系统后，F12 → Network → 任意请求 → Request Headers 里的 Cookie 整行"></textarea>
+        </label>
+        <button class="btn btn-primary" type="submit" id="cookie-submit">
+          <span>用 Cookie 登录</span>
+          <svg class="ic" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+        </button>
+      </form>
+
+      <p id="login-msg" class="msg" role="status"></p>
+
+      <div class="login-foot">
+        <p>凭据只用来换一次会话票据，服务端不保存密码。</p>
+        <a class="link" href="?mock=1">先看演示数据</a>
+      </div>
+    </div>
   </div>
 </section>
 
-<!-- ============ 主界面 ============ -->
-<section id="app-view" class="hidden">
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo small">课</span>
-      <span>我的课表</span>
-    </div>
-
-    <div class="controls">
-      <select id="sel-xnm" title="学年"></select>
-      <select id="sel-xqm" title="学期"></select>
-
-      <div class="week-nav">
-        <button id="prev-week" class="btn icon" title="上一周">‹</button>
-        <select id="sel-week" title="周次"></select>
-        <button id="next-week" class="btn icon" title="下一周">›</button>
-        <button id="this-week" class="btn ghost">本周</button>
+<!-- ══════════════ 主界面 ══════════════ -->
+<section id="app-view" hidden>
+  <div class="masthead">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark sm" aria-hidden="true">课</div>
+        <div class="brand-text">
+          <h1>我的课表</h1>
+          <p class="brand-meta" id="meta-student">—</p>
+        </div>
       </div>
 
-      <label class="date-field" title="开学第一周的周一，用于计算当前周">
-        <span>开学</span>
-        <input id="start-date" type="date">
-      </label>
+      <div class="topbar-right">
+        <button id="term-chip" class="chip" type="button" title="切换学年 / 学期">
+          <span id="term-chip-text">—</span>
+          <svg class="ic" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+        </button>
+        <button id="open-settings" class="icon-btn" type="button" aria-label="设置">
+          <svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg>
+        </button>
+      </div>
+    </header>
 
-      <button id="logout" class="btn ghost">退出</button>
+    <div class="weekbar">
+      <button id="prev-week" class="icon-btn" type="button" aria-label="上一周">
+        <svg class="ic" aria-hidden="true"><use href="#i-chevron-left"/></svg>
+      </button>
+      <div class="weekstrip" id="weekstrip" role="group" aria-label="选择周次"></div>
+      <button id="next-week" class="icon-btn" type="button" aria-label="下一周">
+        <svg class="ic" aria-hidden="true"><use href="#i-chevron-right"/></svg>
+      </button>
+
+      <button id="this-week" class="text-btn" type="button">本周</button>
+
+      <div class="seg seg-view" role="group" aria-label="切换视图">
+        <button class="seg-item" data-view="day" type="button" aria-label="按天查看">
+          <svg class="ic" aria-hidden="true"><use href="#i-list"/></svg>
+        </button>
+        <button class="seg-item" data-view="week" type="button" aria-label="按周查看">
+          <svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg>
+        </button>
+      </div>
     </div>
-  </header>
+  </div>
 
-  <div id="student-bar" class="student-bar"></div>
+  <main class="main">
+    <div id="nowbar" class="nowbar" hidden></div>
+    <div id="daystrip" class="daystrip" hidden></div>
 
-  <main>
-    <div id="grid" class="grid"></div>
-    <p id="app-msg" class="msg"></p>
+    <div class="grid-wrap" id="grid-wrap">
+      <div id="grid" class="grid" aria-label="周课表"></div>
+    </div>
+
+    <div id="agenda" class="agenda" hidden></div>
+    <div id="practices" class="practices" hidden></div>
+
+    <p id="app-msg" class="msg" role="status"></p>
+
+    <div id="loader" class="loader" hidden>
+      <span></span><span></span><span></span>
+      <em>正在取课表</em>
+    </div>
   </main>
 </section>
 
-<!-- ============ 详情弹层 ============ -->
-<div id="modal" class="modal hidden">
-  <div class="modal-card">
-    <button id="modal-close" class="modal-close" type="button">×</button>
-    <div id="modal-body"></div>
+<!-- ══════════════ 课程详情 ══════════════ -->
+<div class="overlay" id="detail" hidden>
+  <div class="sheet" id="detail-card" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+    <button class="sheet-close" data-close="detail" type="button" aria-label="关闭">
+      <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
+    </button>
+    <div class="sheet-body" id="detail-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════ 设置 ══════════════ -->
+<div class="overlay" id="settings" hidden>
+  <div class="sheet sheet-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="sheet-head">
+      <h2 id="settings-title">设置</h2>
+      <button class="sheet-close" data-close="settings" type="button" aria-label="关闭">
+        <svg class="ic" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="field">
+        <label class="field-label" for="sel-xnm">学年</label>
+        <div class="select"><select id="sel-xnm"></select></div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="sel-xqm">学期</label>
+        <div class="select"><select id="sel-xqm"></select></div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="start-date">开学第一周的周一</label>
+        <div class="select"><input id="start-date" type="date"></div>
+        <p class="hint">用来算「现在是第几周」和每天的具体日期。只存在这台设备上。</p>
+      </div>
+      <div class="field">
+        <span class="field-label">配色</span>
+        <div class="seg seg-theme" id="theme-seg">
+          <button class="seg-item" data-theme="system" type="button">跟随系统</button>
+          <button class="seg-item" data-theme="light" type="button">浅色</button>
+          <button class="seg-item" data-theme="dark" type="button">深色</button>
+        </div>
+      </div>
+      <button class="btn btn-quiet" id="logout" type="button">
+        <svg class="ic" aria-hidden="true"><use href="#i-log-out"/></svg>
+        <span>退出登录</span>
+      </button>
+    </div>
   </div>
 </div>
 
