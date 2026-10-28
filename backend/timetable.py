@@ -11,20 +11,46 @@ from __future__ import annotations
 import re
 from typing import Any
 
-SLOTS = [
-    {"idx": 1, "start": "08:00", "end": "08:45"},
-    {"idx": 2, "start": "08:55", "end": "09:40"},
-    {"idx": 3, "start": "10:00", "end": "10:45"},
-    {"idx": 4, "start": "10:55", "end": "11:40"},
-    {"idx": 5, "start": "14:00", "end": "14:45"},
-    {"idx": 6, "start": "14:55", "end": "15:40"},
-    {"idx": 7, "start": "16:00", "end": "16:45"},
-    {"idx": 8, "start": "16:55", "end": "17:40"},
-    {"idx": 9, "start": "19:00", "end": "19:45"},
-    {"idx": 10, "start": "19:55", "end": "20:40"},
-    {"idx": 11, "start": "20:50", "end": "21:35"},
-    {"idx": 12, "start": "21:45", "end": "22:30"},
+# ---------------- 作息时间 ----------------
+# 一节课 45 分钟；同一大节内两小节之间歇 10 分钟，
+# 每上完两节歇 25 分钟（2→3、4→5、6→7、8→9）。
+# 上午 / 下午 / 晚上各大节的开始时间是固定的，午饭、晚饭时长由锚点自然决定，
+# 所以第 9 节从 19:00 开始这一点是靠 BLOCKS 里第三个锚点保证的，
+# 第 8 节 17:55 下课后即晚饭时间。
+PERIOD_MIN = 45
+BREAK_BETWEEN_PERIODS = 10
+BREAK_BETWEEN_PAIRS = 25
+
+# (起始节次, 结束节次, 大节开始时间)
+BLOCKS = [
+    (1, 4, "08:30"),    # 上午
+    (5, 8, "14:10"),    # 下午
+    (9, 12, "19:00"),   # 晚上
 ]
+
+
+def _to_min(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _fmt(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _build_slots() -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    for first, last, anchor in BLOCKS:
+        cur = _to_min(anchor)
+        for idx in range(first, last + 1):
+            slots.append({"idx": idx, "start": _fmt(cur), "end": _fmt(cur + PERIOD_MIN)})
+            cur += PERIOD_MIN + (
+                BREAK_BETWEEN_PERIODS if idx % 2 == 1 else BREAK_BETWEEN_PAIRS
+            )
+    return slots
+
+
+SLOTS = _build_slots()
 
 WEEKDAY_CN = ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 

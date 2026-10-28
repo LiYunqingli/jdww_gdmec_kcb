@@ -799,13 +799,16 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------------- 演示数据（?mock=1） ---------------- */
+/* 与后端 backend/timetable.py 的 SLOTS 保持一致：
+   45 分钟一节，同大节内歇 10 分钟，每两节后歇 25 分钟，
+   上午 08:30 / 下午 14:10 / 晚上 19:00 起。 */
 const MOCK_SLOTS = [
-  { idx: 1, start: "08:00", end: "08:45" }, { idx: 2, start: "08:55", end: "09:40" },
-  { idx: 3, start: "10:00", end: "10:45" }, { idx: 4, start: "10:55", end: "11:40" },
-  { idx: 5, start: "14:00", end: "14:45" }, { idx: 6, start: "14:55", end: "15:40" },
-  { idx: 7, start: "16:00", end: "16:45" }, { idx: 8, start: "16:55", end: "17:40" },
+  { idx: 1, start: "08:30", end: "09:15" }, { idx: 2, start: "09:25", end: "10:10" },
+  { idx: 3, start: "10:35", end: "11:20" }, { idx: 4, start: "11:30", end: "12:15" },
+  { idx: 5, start: "14:10", end: "14:55" }, { idx: 6, start: "15:05", end: "15:50" },
+  { idx: 7, start: "16:15", end: "17:00" }, { idx: 8, start: "17:10", end: "17:55" },
   { idx: 9, start: "19:00", end: "19:45" }, { idx: 10, start: "19:55", end: "20:40" },
-  { idx: 11, start: "20:50", end: "21:35" }, { idx: 12, start: "21:45", end: "22:30" },
+  { idx: 11, start: "21:05", end: "21:50" }, { idx: 12, start: "22:00", end: "22:45" },
 ];
 
 const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
