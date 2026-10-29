@@ -239,6 +239,11 @@ async function boot() {
 
   initStartDate();
   await loadTimetable();
+
+  // 第一次进来自动走一遍引导；等布局和课表都落定再开始，免得框错位置
+  if (!tourSeen()) {
+    setTimeout(() => { if (!tourOpen) startTour(); }, 420);
+  }
 }
 
 function initStartDate() {
@@ -773,15 +778,210 @@ $$("#theme-seg .seg-item").forEach((b) => {
   });
 });
 
+$("replay-tour").addEventListener("click", () => {
+  closeOverlay("settings");
+  setTimeout(startTour, 240);
+});
+
 $("logout").addEventListener("click", async () => {
   try { await api("/api/logout", { method: "POST" }); } catch { /* 忽略 */ }
   store.token = "";
   closeOverlay("settings");
   showLogin("已退出登录");
 });
+/* ---------------- 新手引导 ----------------
+   目标元素在启动时解析一次，解析不到的步骤自动丢弃，
+   所以同一套步骤在周视图 / 日视图 / 手机上都成立。 */
+const TOUR_KEY = "kcb.tour";
+
+const TOUR_STEPS = [
+  {
+    title: "这是你的课表",
+    desc: "按学年、学期、周查看。花半分钟认一下界面，随时可以跳过。",
+    target: null,
+  },
+  {
+    title: "换周就点这里",
+    desc: "点数字直接跳到那一周，手机上左右滑动。键盘 ← → 也能翻，T 回到本周。",
+    target: "#weekstrip",
+  },
+  {
+    title: "两种看法",
+    desc: "周视图一屏看完一周；日视图按时间轴排当天，手机上更好读。选过会记住。",
+    target: ".seg-view",
+  },
+  {
+    title: "点一节课看看",
+    desc: "教师、地点、校区、上课周次、课程号都在详情里，按 Esc 或点空白处关掉。",
+    target: ".course, .ag-card, #grid-wrap, #agenda",
+  },
+  {
+    title: "现在上到哪了",
+    desc: "顶部这条只在你看本周时出现：正在上的课会显示还剩多少分钟，没课就提示下一节。",
+    target: "#nowbar",
+  },
+  {
+    title: "时间和配色在这儿改",
+    desc: "学年学期、开学第一周的周一（用来算现在是第几周）、深浅色，都在设置里。",
+    target: "#open-settings",
+  },
+  {
+    title: "就这些",
+    desc: "界面会跟着你的选择走。想再看一遍，设置最下面有「重看新手引导」。",
+    target: null,
+  },
+];
+
+let tourOpen = false;
+let tourIndex = 0;
+let tourSteps = [];
+let tourRaf = 0;
+
+const tourSeen = () => {
+  try { return !!localStorage.getItem(TOUR_KEY); } catch { return true; }
+};
+
+/** 逗号分隔的候选选择器，返回第一个真正可见的元素 */
+function resolveTourTarget(sel) {
+  if (!sel) return null;
+  for (const s of sel.split(",")) {
+    const el = document.querySelector(s.trim());
+    if (el && el.getClientRects().length > 0) return el;
+  }
+  return null;
+}
+
+function startTour() {
+  if (tourOpen || $("app-view").hidden) return;
+  tourSteps = TOUR_STEPS
+    .map((s) => ({ ...s, el: resolveTourTarget(s.target) }))
+    .filter((s) => !s.target || s.el);
+  if (!tourSteps.length) return;
+
+  tourOpen = true;
+  tourIndex = 0;
+  $("tour-dots").innerHTML = tourSteps.map(() => "<i></i>").join("");
+  $("tour").hidden = false;
+  showTourStep(0);
+  $("tour-card").focus({ preventScroll: true });
+}
+
+function endTour() {
+  if (!tourOpen) return;
+  tourOpen = false;
+  $("tour").hidden = true;
+  try { localStorage.setItem(TOUR_KEY, "1"); } catch { /* 存不了就一直提示吧 */ }
+  if (!("ontouchstart" in window)) {
+    const btn = $("open-settings");
+    if (btn) btn.focus({ preventScroll: true });
+  }
+}
+
+function showTourStep(i) {
+  tourIndex = clamp(i, 0, tourSteps.length - 1);
+  const step = tourSteps[tourIndex];
+  $("tour-title").textContent = step.title;
+  $("tour-desc").textContent = step.desc;
+  $("tour-count").textContent = `${tourIndex + 1} / ${tourSteps.length}`;
+  $("tour-prev").disabled = tourIndex === 0;
+  $("tour-next").textContent = tourIndex === tourSteps.length - 1 ? "开始用" : "下一步";
+  Array.from($("tour-dots").children).forEach((d, k) => d.classList.toggle("is-on", k === tourIndex));
+
+  if (step.el) {
+    const r = step.el.getBoundingClientRect();
+    if (r.top < 12 || r.bottom > window.innerHeight - 12) {
+      step.el.scrollIntoView({ block: "center", behavior: REDUCED.matches ? "auto" : "smooth" });
+    }
+  }
+  requestAnimationFrame(placeTour);
+}
+
+function placeTour() {
+  if (!tourOpen) return;
+  const step = tourSteps[tourIndex];
+  const el = step && step.el;
+  const ring = $("tour-ring");
+  const card = $("tour-card");
+  if (!card) return;
+
+  if (!el) {
+    ring.hidden = true;
+    $("tour").classList.add("is-plain");
+    card.classList.remove("is-dock");
+    card.classList.add("is-center");
+    card.style.left = card.style.top = "";
+    return;
+  }
+
+  $("tour").classList.remove("is-plain");
+  card.classList.remove("is-center");
+  ring.hidden = false;
+
+  const pad = 7;
+  const r = el.getBoundingClientRect();
+  const box = {
+    left: Math.round(r.left - pad),
+    top: Math.round(r.top - pad),
+    width: Math.round(r.width + pad * 2),
+    height: Math.round(r.height + pad * 2),
+  };
+  ring.style.left = box.left + "px";
+  ring.style.top = box.top + "px";
+  ring.style.width = box.width + "px";
+  ring.style.height = box.height + "px";
+
+  // 目标太高大、或者屏幕太窄，卡片就贴在底部，不去挤压空间
+  if (window.innerWidth <= 560 || box.height > window.innerHeight * 0.52) {
+    card.classList.add("is-dock");
+    card.style.left = card.style.top = "";
+    return;
+  }
+  card.classList.remove("is-dock");
+
+  const gap = 14;
+  const cw = card.offsetWidth || 330;
+  const ch = card.offsetHeight || 190;
+  let top = box.top + box.height + gap;
+  if (top + ch > window.innerHeight - 12) top = box.top - gap - ch;
+  top = clamp(top, 12, Math.max(12, window.innerHeight - ch - 12));
+  const left = clamp(
+    box.left + box.width / 2 - cw / 2,
+    12,
+    Math.max(12, window.innerWidth - cw - 12)
+  );
+  card.style.left = Math.round(left) + "px";
+  card.style.top = Math.round(top) + "px";
+}
+
+$("tour-next").addEventListener("click", () => {
+  if (tourIndex >= tourSteps.length - 1) return endTour();
+  showTourStep(tourIndex + 1);
+});
+$("tour-prev").addEventListener("click", () => showTourStep(tourIndex - 1));
+$("tour-skip").addEventListener("click", endTour);
+
+window.addEventListener("resize", () => {
+  if (!tourOpen) return;
+  cancelAnimationFrame(tourRaf);
+  tourRaf = requestAnimationFrame(placeTour);
+}, { passive: true });
+document.addEventListener("scroll", () => {
+  if (!tourOpen) return;
+  cancelAnimationFrame(tourRaf);
+  tourRaf = requestAnimationFrame(placeTour);
+}, { passive: true, capture: true });
 
 /* ---------------- 键盘 ---------------- */
 document.addEventListener("keydown", (e) => {
+  if (tourOpen) {
+    const onCard = document.activeElement === $("tour-card") || document.activeElement === document.body;
+    if (e.key === "Escape") { e.preventDefault(); endTour(); }
+    else if (e.key === "ArrowRight" || (e.key === "Enter" && onCard)) {
+      e.preventDefault();
+      $("tour-next").click();
+    } else if (e.key === "ArrowLeft") { e.preventDefault(); $("tour-prev").click(); }
+    return;
+  }
   if (e.key === "Escape") {
     closeOverlay("detail");
     closeOverlay("settings");

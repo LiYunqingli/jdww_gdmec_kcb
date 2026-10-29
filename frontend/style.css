@@ -1007,6 +1007,125 @@ textarea { resize: vertical; font-size: 13px; line-height: 1.55; font-family: va
 /* ============================================================
    响应式
    ============================================================ */
+/* ---------------- 新手引导 ----------------
+   遮蔽用 box-shadow 的大 spread 挖洞，一个元素就能做出"只亮目标"的效果，
+   不需要四块遮罩拼边。朱红只用来框住"看这里"。 */
+.tour {
+  position: fixed; inset: 0;
+  z-index: 90;
+  pointer-events: auto;
+}
+/* 没有具体目标时（首尾两步）用整屏遮罩；有目标时由 ring 的投影挖洞 */
+.tour.is-plain { background: var(--veil); }
+
+.tour-ring {
+  position: absolute;
+  border: 1.5px solid var(--signal);
+  border-radius: 2px;
+  box-shadow: 0 0 0 9999px var(--veil);
+  pointer-events: none;
+  transition: left .24s cubic-bezier(.2, .8, .3, 1), top .24s cubic-bezier(.2, .8, .3, 1),
+    width .24s cubic-bezier(.2, .8, .3, 1), height .24s cubic-bezier(.2, .8, .3, 1);
+}
+.tour-ring::after {
+  content: "";
+  position: absolute; inset: -4px;
+  border: 1px solid color-mix(in srgb, var(--signal) 32%, transparent);
+  border-radius: 3px;
+}
+
+.tour-card {
+  position: absolute;
+  width: 330px;
+  padding: 14px 16px 14px;
+  background: var(--surface);
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  box-shadow: 4px 4px 0 var(--hard), 0 14px 44px rgba(0, 0, 0, .16);
+  animation: tourIn .22s cubic-bezier(.2, .8, .3, 1);
+}
+@keyframes tourIn { from { transform: translateY(6px); opacity: .6; } }
+.tour-card:focus, .tour-card:focus-visible { outline: none; }
+.tour-card.is-center {
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(340px, calc(100vw - 28px));
+  animation: none;
+}
+.tour-card.is-dock {
+  left: 12px; right: 12px; top: auto;
+  width: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  animation: tourDock .24s cubic-bezier(.2, .8, .3, 1);
+}
+@keyframes tourDock { from { transform: translateY(14px); opacity: .6; } }
+
+.tour-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+}
+.tour-count {
+  font-size: 10.5px; letter-spacing: .1em;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.tour-skip {
+  border: 0; background: transparent;
+  padding: 2px 0;
+  font-family: inherit; font-size: 11.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+  letter-spacing: .02em;
+}
+.tour-skip:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+
+.tour-title { margin-top: 8px; font-size: 16.5px; }
+.tour-desc {
+  margin: 7px 0 0;
+  font-size: 13px; line-height: 1.72;
+  color: var(--ink-2);
+}
+
+.tour-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  margin-top: 15px;
+}
+.tour-dots { display: flex; gap: 5px; }
+.tour-dots i {
+  display: block;
+  width: 11px; height: 2px;
+  background: var(--rule-2);
+  transition: width .2s, background .2s;
+}
+.tour-dots i.is-on { width: 18px; background: var(--signal); }
+
+.tour-actions { display: flex; gap: 6px; }
+.tour-btn {
+  height: 31px; padding: 0 12px;
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: inherit; font-size: 12.5px; font-weight: 500;
+  cursor: pointer;
+  transition: background .14s, color .14s, border-color .14s;
+}
+.tour-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-2); }
+.tour-btn:disabled { opacity: .4; cursor: default; }
+.tour-btn-primary {
+  background: var(--ink);
+  border-color: transparent;
+  color: var(--on-ink);
+}
+.tour-btn-primary:hover:not(:disabled) { background: var(--ink); color: var(--on-ink); filter: brightness(1.15); }
+
+@media (max-width: 560px) {
+  .tour-card:not(.is-center) { border-radius: 4px; }
+  .tour-title { font-size: 16px; }
+  .tour-desc { font-size: 13.5px; }
+}
+
 @media (max-width: 900px) {
   :root { --row-h: 56px; --gutter: 48px; }
 
@@ -1075,6 +1194,6 @@ textarea { resize: vertical; font-size: 13px; line-height: 1.55; font-family: va
 }
 
 @media print {
-  .masthead, .nowbar, .daystrip, .login-meta, .overlay { display: none !important; }
+  .masthead, .nowbar, .daystrip, .login-meta, .overlay, .tour { display: none !important; }
   body { background: #fff; }
 }
