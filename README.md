@@ -19,6 +19,8 @@
 - 深浅色可跟随系统，也可以在设置里固定浅色 / 深色
 - 第一次登录后自动走一遍聚光灯引导，依次指向周次条、视图切换、课程块和设置；`←` `→` 翻，`Esc` 跳过，设置里可以「重看新手引导」
 - 会话落盘，重启服务后旧 token 依然可用；**不保存密码**
+- **一个账号同时只有一个会话**：同一学号在另一处登录，旧令牌立刻失效，旧页面会提示「该账号已在另一处登录」，不会出现两个标签页各自读写同一份教务会话
+- **`/admin` 数据看板**：谁在什么时候用什么设备登录、接口耗时分布、错误率、设备/浏览器构成、日志尾部，全部实时聚合（ECharts 图表，深浅色自适应）
 
 ## 作息时间
 
@@ -45,10 +47,13 @@
 | `server` | 标题、版本、默认 host / port、CORS 白名单 |
 | `logging` | 日志级别、格式、控制台与文件两路输出、第三方库降噪 |
 | `paths` | `data/`、会话文件名、前端目录 |
+| `session` | `single`：同一账号是否只保留最新会话（默认 `true`） |
 | `http` | 请求超时、重定向上限、User-Agent |
 | `jwxt` | 教务 / 门户 / 统一认证三个域名 |
 | `terms` | 学期代码 → 中文名（`3` / `12` / `16`） |
 | `timetable` | 作息：单节时长、课间、各大节打铃时间 |
+| `admin` | 管理后台账号密码、会话时长、失败限流 |
+| `audit` | 事件文件路径、轮转大小、内存保留条数 |
 
 日志级别只写一个 `logging.level` 就够：
 
@@ -68,7 +73,18 @@
 
 配置写坏了不会让服务起不来：文件缺失或 JSON 语法错误就整体回落到内置默认值，单项类型写错只忽略那一项，两种情况都会在启动日志里打一条 WARNING 说明。
 
-日志内容：启动 / 停止、每个 `/api` 请求的耗时与状态码、登录结果（学号脱敏成 `19****01`，不记录密码和 cookie 值）、教务接口往返与课表规整统计（去重了几条、跳过了几条）。异常不再被 `except: pass` 静默吞掉。
+日志内容：启动 / 停止、每个 `/api` 请求的耗时与状态码、登录结果（**学号 / 账号完整记录**，不记录密码和 cookie 值）、教务接口往返与课表规整统计（去重了几条、跳过了几条）。异常不再被 `except: pass` 静默吞掉。
+
+日志目录 `logs/` 下有两个文件，分工不同：
+
+| 文件 | 用途 |
+| --- | --- |
+| `app.log` | 给人看：带时间戳和对齐，按 2 MB 轮转，排查问题时直接翻 |
+| `events.jsonl` | 给程序看：一行一个 JSON 事件，`/admin` 看板的数据源，按 5 MB 轮转、留 3 份 |
+
+事件写在 `logs/events.jsonl`（`audit` 段可改路径和容量），只有三种：`request`（每个 `/api` 请求）、`login`（每次登录尝试）、`logout`。管理后台自己的轮询请求不进统计，避免仪表盘把真实流量盖掉。
+
+> 学号是完整写进日志的，这是 `/admin` 能按人统计的前提。`logs/` 已 gitignore，别把日志文件发出去。
 
 > `start.bat` 会自动探测 8000-8010 的空闲端口，所以走它启动时端口以探测结果为准（`server.port` 只是 `python -m backend.app` 的默认值）；host / port 都能用 `KCB_HOST` / `KCB_PORT` 覆盖。
 
@@ -102,10 +118,14 @@ python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ## 目录结构
 
 ```
-config.json       全部可调参数（服务、日志、域名、作息），唯一设置入口
+config.json       全部可调参数（服务、日志、域名、作息、后台账号），唯一设置入口
 backend/
   config.py       读 config.json，深合并默认值，配置写坏也不崩
   logging_setup.py 日志初始化：控制台 + 轮转文件，级别来自配置
+  audit.py        事件采集与聚合：JSONL 落盘 + 内存统计，看板的数据源
+  admin.py        /api/admin/*：后台登录、限流、统计、日志尾部
+  requestinfo.py  从请求里取 IP 与设备信息
+  useragent.py    UA 解析：浏览器 / 系统 / 设备类型
   app.py          FastAPI 接口层：登录、学年学期、课表、会话持久化
   jwxt.py         教务系统客户端：SSO 全链路 + 课表拉取
   jwxt_rsa.py     正方教务本地登录用的 RSA(PKCS#1 v1.5) 加密（保留备用）
@@ -114,13 +134,60 @@ frontend/
   index.html      单页界面（内联 SVG 图标，无图标库依赖）
   app.js          无框架，原生 JS
   style.css       设计令牌（配色 / 字体 / 行高）+ 深浅色 + 响应式
+  admin.html      数据看板（指标卡 + ECharts + 明细表 + 日志）
+  vendor/         echarts.min.js（1 MB，本地放着，断网也能开看板）
 data/             会话快照（运行时生成，已 gitignore）
-logs/             运行日志（运行时生成，已 gitignore）
+logs/             运行日志 app.log + 事件 events.jsonl（运行时生成，已 gitignore）
 start.bat         Windows 一键启动
 ```
 
 界面字体是 IBM Plex Sans / IBM Plex Mono，从 jsDelivr 取；取不到会自动退回系统字体
 （PingFang SC / 微软雅黑等），只是观感差异，不影响功能。纯前端无构建步骤。
+
+## 管理后台
+
+打开 `http://127.0.0.1:8000/admin`（跟着聊天窗口里那个端口走）。账号密码在 `config.json`：
+
+```json
+"admin": {
+  "enabled": true,
+  "username": "admin",
+  "password": "kcb-admin",
+  "session_hours": 12,
+  "max_login_fails": 5,
+  "fail_window_minutes": 10
+}
+```
+
+**默认密码 `kcb-admin` 一定要改**——还在用默认值时，启动日志会打一条 WARNING 提醒。改完重启生效。
+
+看板上有什么：
+
+- **指标卡**：在线会话、累计/今日登录用户、登录成功率、今日请求与错误率、平均与 P95 耗时、今日峰值时段、管理后台登录数
+- **图表**：近 7 天请求/错误/登录走势、今日 24 小时分布、接口平均耗时 Top、设备类型、浏览器、响应状态码、登录成功率仪表盘
+- **表格**：登录过的用户（学号、成功/失败次数、最后登录、设备、浏览器/系统、IP）、当前在线账号、最近登录明细、最近请求、最慢的请求
+- **日志尾部**：直接看 `app.log` 或 `events.jsonl`，随时切换
+
+数据来源是 `logs/events.jsonl`，重启服务不会丢历史（启动时读回最近 `audit.memory_events` 条）。页面默认 15 秒自动刷新，可以关掉。
+
+几点实现上的取舍：
+
+- 管理后台的 token 和学生的登录 token **分开存**，互相不能顶替；token 只放内存，重启即失效
+- 同一 IP 连续失败 `max_login_fails` 次后按 `fail_window_minutes` 内限流（实测第 6 次返回 429）
+- 密码用 `hmac.compare_digest` 比对，避免计时攻击；明文存在 `config.json` 里，这是个人自用项目的取舍——**别把带真实密码的 config 推到公开仓库**
+- 看板要读全量事件做聚合，事件量大了（> 5000 条）就只统计内存里保留的那部分，避免一次请求扫几万行
+
+## 会话策略
+
+学生端一个学号只保留**最新一个**会话，这是 `config.json` 的 `session.single`（默认开）：
+
+- 新登录成功时，先把这个学号名下的其它 token 从内存和 `data/sessions.json` 里摘掉，旧客户端的连接池一并关闭
+- 旧标签页下次请求会拿到 401 和一句明确的话：「该账号已在另一处登录，此会话已失效」，而不是含糊的"登录已过期"
+- 启动时也会按同样规则清洗历史快照，把超出的一条并成 ts 最新的那条（清理条数写进日志）
+- 被顶下线的 token 记在内存里（上限 200 条），只为给出准确提示，重启即清空
+- Cookie 登录不强制带学号，用的是占位账号 `cookie-user`，同名占位之间**不互相顶**，否则两个用 Cookie 的人会互相踢下线
+
+想恢复成"允许多端同时在线"，把 `session.single` 改成 `false` 即可。管理后台是只读看板，多终端同时看着是正常需求，所以没套这条规则。
 
 ## 登录链路
 
@@ -149,8 +216,13 @@ GET  /jwglxt/ticketlogin?uid=...&verify=...           → 教务会话建立
 | GET | `/api/raw?xnm=&xqm=` | 原始 JSON，排查字段差异用 |
 | GET | `/api/me` | 学生信息 |
 | GET | `/api/health` | 健康检查 |
+| POST | `/api/admin/login` | `{username, password}` → 管理后台 token |
+| POST | `/api/admin/logout` | 注销管理后台 token |
+| GET | `/api/admin/stats` | 看板全量聚合数据 |
+| GET | `/api/admin/logs?source=app\|events&lines=` | 日志尾部 |
 
-除 `/api/login`、`/api/login-cookie`、`/api/health` 外都要带 `Authorization: Bearer <token>`。
+学生接口除 `/api/login`、`/api/login-cookie`、`/api/health` 外都要带 `Authorization: Bearer <token>`；
+`/api/admin/*` 用自己那套 token，两套不通用。
 
 ## 踩过的坑
 
