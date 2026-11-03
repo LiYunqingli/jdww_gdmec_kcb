@@ -1,294 +1,229 @@
 # jdww_gdmec_kcb
 
-广东机电职业技术学院 · 课表代理。
+广东机电职业技术学院 · 课表代理。把教务系统那张难用的总课表，换成一个能按学年 / 学期 / 周查看的本地网页。
 
-原版教务系统只给一个又丑又难用的总课表，查某个学期、某一周的课要来回翻。
-这个项目把教务系统的 SSO 登录和数据接口重做了一遍，前面套一层自己的 Web 界面：按学年 / 学期 / 周查看，点开课程看详情。
+服务跑在**你自己的电脑**上，默认只监听 `127.0.0.1`，不经过作者或任何第三方服务器。
+
+> **需要校园网。** 登录和课表都要连学校域名（`home` / `auth` / `jwxt.gdmec.edu.cn`），校园网外（家里宽带、手机流量）通常不通，校外得先连学校 VPN。
+> 只想先看看界面长什么样：用**演示模式** `?mock=1`，纯前端样例数据，任何网络下都能打开，不需要账号。详见[网络要求](#网络要求)。
 
 ## 功能
 
 - 用**学校统一身份认证**（`auth.gdmec.edu.cn`）的账号密码登录，不需要教务独立密码
-- 学年 × 学期切换，自动定位到当前学期
-- 两种视图：**周视图**（七列网格，一屏看完一周）和**日视图**（左侧时间轴 + 日程，手机默认用这个）
-- 周次条直接点选，`←` `→` 换周 / 换天，`T` 回本周
-- 每个星期几都带真实日期；今天那一列高亮，正在上的课带标记，顶部还会提示「正在进行 / 下一节」
-- 课程按课名自动分色（七色调色盘，同一门课整学期同色）
+- 学年 × 学期切换，自动定位当前学期
+- 两种视图：**周视图**（七列网格）+ **日视图**（时间轴，手机默认）
+- 周次条点选，`←` `→` 换周 / 换天，`T` 回本周
+- 每个星期几带真实日期；今天那列高亮，正在上的课标出来，顶部提示「正在进行 / 下一节」
+- 课程按课名自动分色，同一门课整学期同色
 - 课程详情：教师、地点、校区、上课时间、周次、课程号、教学班、备注
-- 开学日期可自定义（存在浏览器本地，用于计算"当前第几周"和每天日期）
-- 表尾连着的空节次会自动收起，不占一屏空白
-- 深浅色可跟随系统，也可以在设置里固定浅色 / 深色
-- 第一次登录后自动走一遍聚光灯引导，依次指向周次条、视图切换、课程块和设置；`←` `→` 翻，`Esc` 跳过，设置里可以「重看新手引导」
-- 会话落盘，重启服务后旧 token 依然可用；**不保存密码**
-- **一个账号同时只有一个会话**：同一学号在另一处登录，旧令牌立刻失效，旧页面会提示「该账号已在另一处登录」，不会出现两个标签页各自读写同一份教务会话
-- **`/admin` 数据看板**：谁在什么时候用什么设备登录、接口耗时分布、错误率、设备/浏览器构成、日志尾部，全部实时聚合（ECharts 图表，深浅色自适应）
+- 深浅色跟随系统或手动固定；首次进入走一遍聚光灯引导（设置里可重看）
+- `/admin` 数据看板：登录记录、接口耗时、错误率、设备构成、日志尾部
 
-## 作息时间
+## 登录到底做了什么
 
-课表上的上下课时间由 `config.json` 的 `timetable` 段按规则算出来，不是写死的时间表：
+这一节说明登录前后所有涉及你数据的事。
 
-```json
-"timetable": {
-  "period_minutes": 40,
-  "break_between_periods": 10,
-  "break_between_pairs": 25,
-  "blocks": [[1, 4, "08:30"], [5, 8, "14:10"], [9, 12, "19:00"]]
-}
+### 1. 账号密码只去一个地方
+
+输入的学号和密码只 POST 给 **`https://auth.gdmec.edu.cn`**（学校统一身份认证），走学校要求的 OAuth2 授权码流程。
+
+- 不经过作者或任何第三方服务器，服务在本机直连学校
+- **不写磁盘、不进日志、不回传给浏览器**；这次请求结束，密码变量就没了
+- 全程 HTTPS
+
+链路（实现见 `backend/jwxt.py`）：
+
+```
+GET  home.gdmec.edu.cn                              门户 → 统一认证登录页，取 pid
+POST auth.gdmec.edu.cn/sso/login                    {username, password, pid} → 302 + OAuth2 code
+GET  home.gdmec.edu.cn/portal/sso/callback?code=…   换成 CAS 的 TGC（门户会话）
+GET  jwxt.gdmec.edu.cn/sso/ddlogin                  → CAS 下发 ST
+GET  jwglxt/ticketlogin?uid=…&verify=…              教务会话建立
 ```
 
-上午 4 节 08:30 起（08:30-09:10 / 09:20-10:00 / 10:25-11:05 / 11:15-11:55），下午 4 节 14:10 起，晚上 19:00 起。大节之间的午饭、晚饭时长不写死，由下一个大节的开始时间决定。学校调整作息时只改 `config.json` 里这几个值、重启即可，前端演示数据 `MOCK_SLOTS`（`frontend/app.js`）记得同步。
+教务登录页的「统一身份验证登录」按钮没配地址（`authJwglxtLoginURL` 为空），所以必须从门户绕进去。
 
+### 2. 登录成功后服务端留下什么
 
-## 配置与日志
+| 留下什么                                                     | 存在哪                               | 说明                                           |
+| ------------------------------------------------------------ | ------------------------------------ | ---------------------------------------------- |
+| 三套会话 Cookie（门户 / 统一认证 / 教务，带 domain 与 path） | `data/sessions.json`                 | 明文；POSIX 下会 `chmod 600`，Windows 上无效   |
+| 学号、登录时间、最后活动时间                                 | 同上                                 | 用于「同一账号只留最新会话」和空闲过期         |
+| 浏览器 token（随机 32 位十六进制）                           | 浏览器 `localStorage` 的 `kcb.token` | 之后每个请求带 `Authorization: Bearer <token>` |
 
-所有可调项都在项目根目录的 **`config.json`**，改完重启生效。代码里不再有散落的设置常量。
+**没有保存**：密码、成绩、身份证号，也不保存课表副本（课表只在内存缓存 60 秒）。
 
-`config.json` **里存着管理后台密码，已 gitignore、不入库**；仓库里那份是模板 `config.example.json`。
-新环境先复制一份再改：
+> ⚠️ `data/sessions.json` 里的 Cookie **等价于你的教务登录态**：拿到它的人不需要密码就能读你的课表。默认空闲 168 小时后失效。别外发，也别放进网盘同步目录。
+
+### 3. 日志里记了什么
+
+- 记录：学号、时间、成功 / 失败、失败原因、IP、UA、浏览器 / 系统 / 设备类型、接口耗时
+- 不记录：密码、Cookie 值
+- 位置：`logs/app.log`（人看）+ `logs/events.jsonl`（看板数据源），`logs/` 已 gitignore
+
+学号是完整写入的，这是 `/admin` 能按人统计的前提。
+
+### 4. Cookie 备用通道
+
+SSO 挂掉时可以手动粘贴浏览器里的 Cookie（`POST /api/login-cookie`）：
+
+- 贴进去的 Cookie 同样落进 `data/sessions.json`
+- 服务端不校验它属于谁，身份统一记为占位账号 `cookie-user`；请求里带的学号只当日志标签，不参与身份判定
+- 它和账号密码登录是**同一份权限**，等同于把教务登录态交给这台机器
+
+### 5. 浏览器还会连哪些域名
+
+- `cdn.jsdelivr.net`：字体 CSS。取不到会退回系统字体，只影响观感
+- ECharts 在 `frontend/vendor/` 本地，看板不联网
+
+## 网络要求
+
+登录和课表全部来自学校三个域名，**运行本程序的机器必须连得通它们**：
+
+| 域名                | 用途                           |
+| ------------------- | ------------------------------ |
+| `home.gdmec.edu.cn` | 门户：取 `pid`、接 OAuth2 回调 |
+| `auth.gdmec.edu.cn` | 统一身份认证：账号密码的提交点 |
+| `jwxt.gdmec.edu.cn` | 教务：课表、学年学期、学生信息 |
+
+- **校园网内**（宿舍、教学楼、图书馆 Wi-Fi）直接可用
+- **校园网外**一般不通。表现是：登录先转几秒，然后报 `网络请求失败：…`（502），或提示「未进入统一身份认证登录页」；已经登录过的会话拉课表也会报 502。这是网络不通，不是账号错了或程序坏了
+- 在校外确实要用真实课表：先连学校 VPN / WebVPN，再照常启动本程序，用法完全一样
+
+### 不在校园网：用演示模式
+
+地址后面加 `?mock=1`，改用前端内置的样例数据：**不请求后端、不连学校、不需要账号**，断网也能打开。
+
+```
+http://127.0.0.1:8000/?mock=1
+```
+
+| 能看到                                                            | 看不到                           |
+| ----------------------------------------------------------------- | -------------------------------- |
+| 周 / 日视图、周次条切换、按课名分色、课程详情、深浅色、聚光灯引导 | 真实登录、真实课表、管理后台数据 |
+
+样例数据固定为 12 门课 / 18 周 / 演示学生「20250001」，另有一条 17-18 周的实习。演示模式不写入登录态，关掉页面重开即恢复原状。
+
+`frontend/` 是纯静态目录，演示模式完全不依赖后端：用任意静态服务器指向它（`python -m http.server -d frontend 8080`），或部署到任意静态托管（资源是相对路径，挂在子目录也行），访问时带 `?mock=1` 即可。不带参数的正常模式必须有后端，因为登录和课表请求都由它转发。
+
+## 快速开始
+
+需要 Python 3.10+（安装时勾选 Add to PATH）。
+
+```bat
+start.bat            :: 双击或命令行执行
+start.bat lan        :: 手机同网段访问（明文 HTTP，会先要求确认）
+```
+
+脚本自动找系统 Python、缺依赖才装、挑 8000-8010 的空闲端口、打开浏览器，不需要虚拟环境。
+
+手动跑：
+
+```bash
+pip install -r requirements.txt
+python -m backend.app          # host / port 读 config.json
+```
+
+打开 `http://127.0.0.1:8000/`，用统一身份认证账号登录（需在校园网内）。不在校园网、或只想先看界面：加 `?mock=1` 走演示数据。端口以启动时提示为准，`start.bat` 会在 8000-8010 里挑空闲的。
+
+## 配置
+
+所有可调项在项目根目录的 `config.json`，改完重启生效。
 
 ```bash
 cp config.example.json config.json     # Windows: copy config.example.json config.json
 ```
 
-没有 `config.json` 也能启动：会退回读 `config.example.json` 并在启动日志里提示一句。想让配置放在别处，
-用 `KCB_CONFIG=/path/to/conf.json` 指过去。
+- `config.json` 含管理后台密码，**已 gitignore、不入库**；仓库里只有模板 `config.example.json`
+- 没有 `config.json` 也能启动：退回读模板并在日志里提示。用 `KCB_CONFIG=/path/conf.json` 可以指定别处
+- 配置写坏不会起不来：文件缺失 / JSON 语法错误整体回落默认值，单项类型写错只忽略那一项，都会在启动日志打 WARNING
 
-| 段 | 管什么 |
-| --- | --- |
-| `server` | 标题、版本、默认 host / port、CORS 白名单（默认空 = 不开放，同源部署不需要；**别填 `["*"]`**） |
-| `logging` | 日志级别、格式、控制台与文件两路输出、第三方库降噪 |
-| `paths` | `data/`、会话文件名、前端目录 |
-| `session` | `single`：同一账号是否只保留最新会话（默认 `true`）；`idle_timeout_hours`：空闲多久算过期，默认 168 小时，填 0 永不过期；`max_sessions`：会话总数上限，默认 512，超了淘汰最久没活动的 |
-| `login` | 学生端登录限流：`max_fails`（默认 8 次）/ `fail_window_minutes`（默认 10 分钟），按 IP 计 |
-| `http` | 请求超时、重定向上限、User-Agent、可信反向代理 |
-| `jwxt` | 教务 / 门户 / 统一认证三个域名 |
-| `terms` | 学期代码 → 中文名（`3` / `12` / `16`） |
-| `timetable` | 作息：单节时长、课间、各大节打铃时间 |
-| `admin` | 管理后台账号密码、会话时长、失败限流 |
-| `cache` | `ttl_seconds`：学年学期 / 课表的缓存秒数，默认 60，填 0 关掉 |
-| `audit` | 事件文件路径、轮转大小、内存保留条数、后台刷盘间隔（`flush_interval_ms`，默认 400） |
+| 段          | 管什么                                                                                                     |
+| ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `server`    | 标题、版本、host / port、CORS 白名单（默认空 = 不开放，**别填 `["*"]`**）                                  |
+| `logging`   | 级别、格式、控制台与文件两路输出、第三方库降噪                                                             |
+| `paths`     | `data/` 目录、会话文件名、前端目录                                                                         |
+| `session`   | `single`（同账号只留最新会话）、`idle_timeout_hours`（默认 168，0 = 永不过期）、`max_sessions`（默认 512） |
+| `login`     | 学生端登录限流：`max_fails` 8 次 / `fail_window_minutes` 10 分钟，按 IP                                    |
+| `http`      | 超时、重定向上限、User-Agent、`trusted_proxies`                                                            |
+| `jwxt`      | 教务 / 门户 / 统一认证三个域名                                                                             |
+| `terms`     | 学期代码 → 中文名（`3` / `12` / `16`）                                                                     |
+| `timetable` | 作息：单节时长、课间、各大节打铃时间                                                                       |
+| `admin`     | 管理后台账号密码、会话时长、失败限流                                                                       |
+| `cache`     | `ttl_seconds` 缓存秒数，默认 60，0 = 关闭                                                                  |
+| `audit`     | 事件文件路径、轮转大小、内存保留条数、刷盘间隔                                                             |
 
-日志级别只写一个 `logging.level` 就够：
+作息由规则算出，不是写死的时间表：`period_minutes` 40 分钟一节，同大节内歇 10 分钟，每两节后歇 25 分钟，`blocks` 给出上午 08:30 / 下午 14:10 / 晚上 19:00 三个锚点。改完重启即可，前端演示数据 `MOCK_SLOTS` 记得同步。
 
-```json
-"logging": {
-  "level": "DEBUG",
-  "console": { "enabled": true, "level": "INFO" },
-  "file":    { "enabled": true, "path": "logs/app.log", "level": "DEBUG", "max_bytes": 2097152, "backup_count": 5 }
-}
-```
+## 接口
 
-- `logging.level` 是**总闸**：设成 `WARNING` 就只剩警告和错误，两路输出一起安静；设成 `DEBUG` 才有最全的细节。
-- `console.level` / `file.level` 各自只能比总闸更严，用来让"文件记全量、控制台只看重点"。默认总闸 DEBUG、控制台 INFO、文件 DEBUG——终端安静，日志文件里留着排查用的完整记录。
-- 控制台输出重定向时自动去掉颜色；文件固定 UTF-8、按 2 MB 轮转、留 5 份。
-- 临时改级别不用动文件：启动命令前加 `KCB_LOG_LEVEL=WARNING`（或 `DEBUG`），环境变量优先级最高。
-- 第三方库（`httpx` / `httpcore` / `uvicorn.access`）默认压到 WARNING，需要时在 `logging.quiet` 里调。
+| 方法 | 路径                                        | 说明                               |
+| ---- | ------------------------------------------- | ---------------------------------- |
+| POST | `/api/login`                                | `{username, password}` → `{token}` |
+| POST | `/api/login-cookie`                         | Cookie 注入（备用通道）            |
+| GET  | `/api/terms`                                | 学年 / 学期选项 + 当前值           |
+| GET  | `/api/timetable?xnm=&xqm=`                  | 规整后的课表                       |
+| GET  | `/api/raw?xnm=&xqm=`                        | 原始 JSON，排查字段差异            |
+| GET  | `/api/me`                                   | 学生信息                           |
+| GET  | `/api/health`                               | 健康检查                           |
+| POST | `/api/logout`                               | 注销当前会话                       |
+| POST | `/api/admin/login`                          | 管理后台登录                       |
+| POST | `/api/admin/logout`                         | 管理后台注销                       |
+| GET  | `/api/admin/stats`                          | 看板聚合数据                       |
+| GET  | `/api/admin/logs?source=app\|events&lines=` | 日志尾部                           |
 
-配置写坏了不会让服务起不来：文件缺失或 JSON 语法错误就整体回落到内置默认值，单项类型写错只忽略那一项，两种情况都会在启动日志里打一条 WARNING 说明。
-
-日志内容：启动 / 停止、每个 `/api` 请求的耗时与状态码、登录结果（**学号 / 账号完整记录**，不记录密码和 cookie 值）、教务接口往返与课表规整统计（去重了几条、跳过了几条）。异常不再被 `except: pass` 静默吞掉。
-
-日志目录 `logs/` 下有两个文件，分工不同：
-
-| 文件 | 用途 |
-| --- | --- |
-| `app.log` | 给人看：带时间戳和对齐，按 2 MB 轮转，排查问题时直接翻 |
-| `events.jsonl` | 给程序看：一行一个 JSON 事件，`/admin` 看板的数据源，按 5 MB 轮转、留 3 份 |
-
-事件写在 `logs/events.jsonl`（`audit` 段可改路径和容量），只有三种：`request`（每个 `/api` 请求）、`login`（每次登录尝试）、`logout`。管理后台自己的轮询请求不进统计，避免仪表盘把真实流量盖掉。
-
-**日志同样是后台线程写盘**：`logging_setup.py` 在 root 上挂的是 `QueueHandler`，
-真正的控制台 / 文件 handler 跑在 `QueueListener` 线程里。DEBUG 级别下一个请求会产生好几条记录，
-同步写会把这几次磁盘 IO 全压在请求线程上；现在请求线程只做一次入队。队列满（默认 2 万条）
-时丢日志而不是吃内存，退出时 `atexit` 会把剩下的写完。
-
-事件不是同步写盘的：请求线程只把这一行塞进内存队列（约 8 µs），后台线程按 `flush_interval_ms` 攒一批一起写，一次 `open` 写几百行。关服务时（`Ctrl+C` / 关窗口）会把剩下的写完。这样即使在机械盘或同步盘上，接口响应也不会被日志 IO 拖住。
-
-会话文件 `data/sessions.json` 同理——只有 cookie 集合真的变了、或者 `ts` 已经 5 分钟没存过，才打脏标记，后台线程合并写一次。所以正常浏览时这个文件几乎不动。
-
-> 学号是完整写进日志的，这是 `/admin` 能按人统计的前提。`logs/` 已 gitignore，别把日志文件发出去。
-
-> `start.bat` 会自动探测 8000-8010 的空闲端口，所以走它启动时端口以探测结果为准（`server.port` 只是 `python -m backend.app` 的默认值）；host / port 都能用 `KCB_HOST` / `KCB_PORT` 覆盖。
-
-## 快速开始
-
-需要 Python 3.10+ 且已安装好（勾选 Add to PATH）。
-
-```bat
-:: 双击即可，也可以在命令行执行
-start.bat
-
-:: 手机同网段访问（会先弹一个确认：这条通道是明文 HTTP，见下面「安全边界」）
-start.bat lan
-```
-
-脚本会自动找到系统里的 Python、检查依赖、挑一个空闲端口（8000-8010）、打开浏览器。
-不需要建虚拟环境。
-
-手动跑也可以：
-
-```bash
-pip install -r requirements.txt
-python -m backend.app                  # 读 config.json 的 host / port
-# 或指定端口：
-python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
-```
-
-浏览器打开 `http://127.0.0.1:8000/`，用统一身份认证的账号密码登录。
-想先看界面效果可以加 `?mock=1` 用演示数据。
+除 `/api/login`、`/api/login-cookie`、`/api/health` 外都要带 `Authorization: Bearer <token>`。`/api/admin/*` 用独立的另一套 token，两套不通用。
 
 ## 目录结构
 
 ```
-config.example.json 配置模板（入库），复制成 config.json 再改
-config.json       本机的真实配置，含管理后台密码，已 gitignore
 backend/
-  config.py       读 config.json，深合并默认值，配置写坏也不崩
-  logging_setup.py 日志初始化：控制台 + 轮转文件，级别来自配置
-  audit.py        事件采集与聚合：JSONL 落盘 + 内存统计，看板的数据源
-  admin.py        /api/admin/*：后台登录、限流、统计、日志尾部
-  requestinfo.py  从请求里取 IP 与设备信息
-  useragent.py    UA 解析：浏览器 / 系统 / 设备类型
-  app.py          FastAPI 接口层：登录、学年学期、课表、会话持久化
-  jwxt.py         教务系统客户端：SSO 全链路 + 课表拉取
-  jwxt_rsa.py     正方教务本地登录用的 RSA(PKCS#1 v1.5) 加密（保留备用）
-  timetable.py    把 kbList 原始数据规整成前端可直接渲染的结构
+  app.py            FastAPI 接口层：登录、学年学期、课表、会话持久化
+  jwxt.py           教务客户端：SSO 全链路 + 课表拉取
+  jwxt_rsa.py       教务本地登录的 RSA 加密（备用）
+  timetable.py      kbList 原始数据规整
+  audit.py          事件采集与聚合，看板数据源
+  admin.py          /api/admin/*：后台登录、限流、统计、日志
+  requestinfo.py    从请求取 IP 与设备信息
+  useragent.py      UA 解析
+  config.py         配置加载与深合并
+  logging_setup.py  日志初始化（异步落盘）
 frontend/
-  index.html      单页界面（内联 SVG 图标，无图标库依赖）
-  app.js          无框架，原生 JS
-  style.css       设计令牌（配色 / 字体 / 行高）+ 深浅色 + 响应式
-  admin.html      数据看板（指标卡 + ECharts + 明细表 + 日志）
-  vendor/         echarts.min.js（1 MB，本地放着，断网也能开看板）
-data/             会话快照（运行时生成，已 gitignore）
-logs/             运行日志 app.log + 事件 events.jsonl（运行时生成，已 gitignore）
-start.bat         Windows 一键启动
+  index.html        课表单页
+  app.js            原生 JS，无框架
+  style.css         设计令牌 + 深浅色 + 响应式
+  admin.html        数据看板（ECharts 本地）
+data/               会话快照（运行时生成，已 gitignore）
+logs/               app.log + events.jsonl（运行时生成，已 gitignore）
+config.example.json 配置模板
+start.bat           Windows 一键启动（GBK + CRLF，别改成 UTF-8）
 ```
 
-界面字体是 IBM Plex Sans / IBM Plex Mono，从 jsDelivr 取；取不到会自动退回系统字体
-（PingFang SC / 微软雅黑等），只是观感差异，不影响功能。纯前端无构建步骤。
+## 会话与过期
 
-## 管理后台
+- 一个学号只保留**最新一个**会话（`session.single`，默认开）。在别处登录后，旧页面再请求会拿到 401 和「该账号已在另一处登录」
+- 空闲超过 `idle_timeout_hours`（默认 168 小时）自动作废；每次读课表、学年学期、学生信息都会刷新活动时间，常用的人不会被踢
+- 会话落盘，重启服务旧 token 仍可用（Cookie 在 `data/sessions.json` 里）
+- 想允许多端同时在线：`session.single` 改 `false`
 
-打开 `http://127.0.0.1:8000/admin`（跟着聊天窗口里那个端口走）。账号密码在 `config.json`：
-
-```json
-"admin": {
-  "enabled": true,
-  "username": "admin",
-  "password": "kcb-admin",
-  "session_hours": 12,
-  "max_login_fails": 5,
-  "fail_window_minutes": 10
-}
-```
-
-`/admin.html` 会 302 跳到这里；`enabled` 关掉时两者都返回 404——静态目录不会绕过这个开关。
-
-**默认密码 `kcb-admin`（模板里是 `change-me`）一定要改**——还在用这两个值时，启动日志会打一条 WARNING 提醒。改完重启生效。
-密码明文存在 `config.json` 里，而 `config.json` 现在**不进版本库**，改完不会被顺手提交上去。
-
-看板上有什么：
-
-- **指标卡**：在线会话、累计/今日登录用户、登录成功率、今日请求与错误率、平均与 P95 耗时、今日峰值时段、管理后台登录数
-- **图表**：近 7 天请求/错误/登录走势、今日 24 小时分布、接口平均耗时 Top、设备类型、浏览器、响应状态码、登录成功率仪表盘
-- **表格**：登录过的用户（学号、成功/失败次数、最后登录、设备、浏览器/系统、IP）、当前在线账号、最近登录明细、最近请求、最慢的请求
-- **日志尾部**：直接看 `app.log` 或 `events.jsonl`，随时切换
-
-数据来源是 `logs/events.jsonl`，重启服务不会丢历史（启动时读回最近 `audit.memory_events` 条）。页面默认 15 秒自动刷新，可以关掉。
-
-几点实现上的取舍：
-
-- 管理后台的 token 和学生的登录 token **分开存**，互相不能顶替；token 只放内存，重启即失效
-- 同一 IP 连续失败 `max_login_fails` 次后按 `fail_window_minutes` 内限流（实测第 6 次返回 429）
-- 这里的"IP"默认取 **TCP 对端地址**。`X-Forwarded-For` / `X-Real-IP` 是客户端能随便写的头，
-  默认**不信**——否则伪造一个随机头就能绕过上面的限流。前面真的挂了 nginx 之类的反代时，
-  把它的地址填进 `http.trusted_proxies`（支持 `10.0.0.0/8` 这种网段），才会采信转发头
-- 密码用 `hmac.compare_digest` 比对，避免计时攻击；明文存在 `config.json` 里，这是个人自用项目的取舍
-- 看板要读全量事件做聚合，事件量大了（> 5000 条）就只统计内存里保留的那部分，避免一次请求扫几万行
-
-## 会话策略
-
-学生端一个学号只保留**最新一个**会话，这是 `config.json` 的 `session.single`（默认开）：
-
-- 新登录成功时，先把这个学号名下的其它 token 从内存和 `data/sessions.json` 里摘掉，旧客户端的连接池一并关闭
-- **会话会因空闲而过期**：`session.idle_timeout_hours`（默认 168 小时）内一次都没访问过就作废，
-  过期时同样会关掉连接池、从内存和磁盘摘掉。每次请求都会刷新"最后活动时间"，所以常用的人不会被踢。
-  填 `0` 恢复成"永不过期"的老行为
-- 旧标签页下次请求会拿到 401 和一句明确的话：「该账号已在另一处登录，此会话已失效」，而不是含糊的"登录已过期"
-- 启动时也会按同样规则清洗历史快照，把超出的一条并成 ts 最新的那条（清理条数写进日志）
-- 被顶下线的 token 记在内存里（上限 200 条），只为给出准确提示，重启即清空
-- Cookie 登录不强制带学号，用的是占位账号 `cookie-user`，同名占位之间**不互相顶**，否则两个用 Cookie 的人会互相踢下线。
-  请求里带的 `username` 只当日志标签，**不参与身份判定**——否则谁都能填一个别人的学号把对方顶掉
-
-想恢复成"允许多端同时在线"，把 `session.single` 改成 `false` 即可。管理后台是只读看板，多终端同时看着是正常需求，所以没套这条规则。
-
-## 登录链路
-
-教务系统没有开放密码登录入口，必须绕学校门户走一遍 CAS：
-
-```
-GET  home.gdmec.edu.cn            → OAuth2 authorize
-POST auth.gdmec.edu.cn/sso/login  → 账号密码
-GET  /sso/oauth2/authorize        → code
-GET  home.gdmec.edu.cn/portal/sso/callback?code=...   → 拿到 TGC
-GET  jwxt.gdmec.edu.cn/sso/ddlogin                    → CAS 下发 ST
-GET  /jwglxt/ticketlogin?uid=...&verify=...           → 教务会话建立
-```
-
-教务登录页上那个"统一身份验证登录"按钮对应的 `authJwglxtLoginURL` 是空的，
-学校没给它配地址，所以只能从门户进，直接访问教务登录页是进不去的。
-
-## 接口
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/login` | `{username, password}` → `{token}` |
-| POST | `/api/login-cookie` | Cookie 注入（SSO 挂掉时的备用通道） |
-| GET | `/api/terms` | 学年 / 学期选项 + 当前默认值 |
-| GET | `/api/timetable?xnm=&xqm=` | 规整后的课表 |
-| GET | `/api/raw?xnm=&xqm=` | 原始 JSON，排查字段差异用 |
-| GET | `/api/me` | 学生信息 |
-| GET | `/api/health` | 健康检查 |
-| POST | `/api/admin/login` | `{username, password}` → 管理后台 token |
-| POST | `/api/admin/logout` | 注销管理后台 token |
-| GET | `/api/admin/stats` | 看板全量聚合数据 |
-| GET | `/api/admin/logs?source=app\|events&lines=` | 日志尾部 |
-
-学生接口除 `/api/login`、`/api/login-cookie`、`/api/health` 外都要带 `Authorization: Bearer <token>`；
-`/api/admin/*` 用自己那套 token，两套不通用。
-
-## 踩过的坑
-
-1. **`jcs` 是整段跨度**（`1-4`），`jc` 才是分段（`1-2节` / `3-4节`）。同一门课在 `kbList` 里会重复出现，
-   直接渲染会重叠。按 `(星期, 起止, 课程, 地点, 周次)` 去重。
-2. **`zcd` 的单双周按段生效**。`11-13周(单),14-17周` 表示第一段单周、第二段全周。
-   把整串当成"单周"处理会错误地干掉 14-17 周。
-3. **`jcma` 是位掩码**（15 = 1-4 节，240 = 5-8 节），作为 `jcs` 缺失时的兜底。
-4. **Cookie 持久化必须带 domain**。只存 name/value，重启后 httpx 不知道往哪个域发，会话直接失效。
-5. **`start.bat` 必须是 GBK + CRLF**。UTF-8 + LF 会让 cmd 逐字节解析错乱，
-   报一堆"不是内部或外部命令"。
 ## 安全边界
 
-这个服务是给**一个人在自己电脑上用**的，默认只监听 `127.0.0.1`。有三条线不要越：
-
-1. **`start.bat lan` 是明文 HTTP。** 学号和统一身份认证密码会以明文穿过局域网，同一网段里任何设备
-   抓包就能拿到；拿到你机器上的 token 也能直接看课表。所以脚本在 `lan` 模式下会先打印警告、要你敲
-   `Y` 确认。**只在宿舍 / 家里这类可信网络里开，公共 WiFi、教学楼开放网络不要开。**
-2. **管理后台密码不要留默认值。** `kcb-admin` / `change-me` 都会在启动日志里触发 WARNING。
-3. **`config.json` 和 `data/` 都别提交。** 前者是管理后台密码，后者是带 Cookie 的会话快照
-   （等价于你的教务登录态）。两者都已在 `.gitignore` 里。
-4. **不要把 `server.cors_origins` 写成 `["*"]`。** 那等于让用户浏览器里**任何**网页都能调这个
-   代理——配合 `/api/login` 就能拿你的机器去撞学校 SSO。默认是空的：前后端同源，不需要跨域。
-5. **`/api/login` 有按 IP 的失败限流**（`login.max_fails` / `fail_window_minutes`，默认 8 次 / 10 分钟），
-   超过就返回 429。它和管理后台那套（`admin.max_login_fails`）是分开计数的。
-
-要真正对公网开放，得自己在前面套一层 HTTPS 反代，并把反代地址写进 `http.trusted_proxies`，
-否则限流拿到的 IP 全是反代地址。
+1. **`start.bat lan` 是明文 HTTP。** 学号和统一身份认证密码会明文穿过局域网，同网段任何设备抓包即可拿到。只在宿舍 / 家里这类可信网络开，公共 WiFi 不要用。
+2. **改掉管理后台默认密码。** 默认值 `kcb-admin`（模板里是 `change-me`）会触发启动 WARNING。
+3. **`config.json`、`data/`、`logs/` 都不要提交或外发。** 分别是后台密码、教务登录态、完整访问记录，均已 gitignore。
+4. **`server.cors_origins` 不要写 `["*"]`。** 那等于让任意网页借你的浏览器调这个代理，配合 `/api/login` 就能拿你的机器去撞学校 SSO。
+5. **要对公网开放，必须自己加 HTTPS 反代**，并把反代地址写进 `http.trusted_proxies`，否则限流看到的 IP 全是反代地址。
 
 ## 免责声明
 
-个人自用项目，只读教务系统的公开数据，不写库、不改成绩、不绕过任何权限校验。
-登录凭据仅在登录瞬间用于换取会话票据，服务端不落盘密码。
+- **非官方项目。** 与广东机电职业技术学院及其教务、信息化部门无任何关联，不代表学校立场，也未经学校授权或认可。
+- **只读。** 程序仅调用课表、学年学期、学生信息的查询接口，不写入、不修改任何教务数据，不涉及成绩、选课、评教等操作，也不绕过任何权限校验——它做的就是你自己在浏览器里能做的事。
+- **凭据风险自负。** 账号密码只在登录瞬间用于向学校统一身份认证换取会话票据，服务端不保存密码；但由此产生的会话 Cookie 会以明文保存在本机 `data/sessions.json`。请自行保管该文件，**不要把它提交到任何仓库、发给他人或放在同步盘**。
+- **使用后果自负。** 因使用本程序导致的账号被风控、被限制登录、数据不一致或任何其他后果，由使用者自行承担；作者不提供任何形式的担保。是否使用、是否违反学校相关管理规定，请自行判断。
+- **无数据收集。** 作者不收集、不上传、也无法获取任何使用者的账号、密码、课表或日志。
+- **接口随时可能失效。** 教务系统改版会导致登录或课表解析失败，本项目不承诺持续维护或修复。
+- **演示站随时关闭。** 作者不会一直维护演示站点，等学校维护完成本站将择日关闭。推荐自己部署使用如果你不能够接受日志留存的话。
 
 ## License
 
-MIT
+MIT，按「现状」提供，不附带任何明示或暗示的担保。
