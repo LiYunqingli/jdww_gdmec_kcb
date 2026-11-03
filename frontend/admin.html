@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="system" data-scheme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数据看板 · 课表代理</title>
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="data:,">
+<script>
+/* 与主站一致：先定配色，避免首屏闪白 */
+(function () {
+  try {
+    var t = localStorage.getItem("kcb.theme") || "system";
+    var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+    var r = document.documentElement;
+    r.dataset.theme = t;
+    r.dataset.scheme = dark ? "dark" : "light";
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5/600.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5/600.css">
+<style>
+:root {
+  --font-ui: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --paper: #f0f1ec;
+  --surface: #f8f9f4;
+  --surface-2: #e6e8e1;
+  --ink: #14171a;
+  --ink-2: #565d61;
+  --ink-3: #8a9196;
+  --rule: #d3d7cc;
+  --rule-2: #b4baad;
+  --signal: #c13a20;
+  --signal-soft: #f4dbd2;
+  --on-signal: #fff7f3;
+  --ok: #2c6a4e;
+  --ok-soft: #d9e9de;
+}
+[data-scheme="dark"] {
+  color-scheme: dark;
+  --paper: #0d1013;
+  --surface: #14181b;
+  --surface-2: #1c2124;
+  --ink: #e9ebe4;
+  --ink-2: #9aa1a4;
+  --ink-3: #6d757a;
+  --rule: #2a3135;
+  --rule-2: #363d41;
+  --signal: #ff6a45;
+  --signal-soft: #331a13;
+  --on-signal: #1a0c07;
+  --ok: #5fa97f;
+  --ok-soft: #152a1e;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.01em; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+a { color: var(--signal); }
+
+/* ---------- 登录 ---------- */
+#login {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+}
+.login-card {
+  width: 100%; max-width: 380px; background: var(--surface);
+  border: 1px solid var(--rule); border-radius: 2px; padding: 28px;
+}
+.login-card h1 { font-size: 17px; }
+.login-card p.hint { margin: 6px 0 22px; color: var(--ink-3); font-size: 12px; }
+label { display: block; font-size: 11.5px; letter-spacing: .06em; color: var(--ink-2); margin-bottom: 6px; }
+input[type=text], input[type=password] {
+  width: 100%; padding: 9px 10px; background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule-2); border-radius: 2px; font-family: var(--font-mono); font-size: 13px;
+  margin-bottom: 14px;
+}
+input:focus { outline: 2px solid var(--signal-soft); outline-offset: 0; border-color: var(--signal); }
+button {
+  font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+  border: 1px solid var(--rule-2); background: transparent; color: var(--ink);
+  padding: 7px 12px; border-radius: 2px; transition: background .12s, border-color .12s;
+}
+button:hover { background: var(--surface-2); }
+button.primary { background: var(--signal); border-color: var(--signal); color: var(--on-signal); }
+button.primary:hover { filter: brightness(1.06); }
+button.wide { width: 100%; padding: 10px; }
+.form-err { color: var(--signal); font-size: 12px; min-height: 18px; margin: -6px 0 8px; }
+
+/* ---------- 布局 ---------- */
+#dash { padding-bottom: 56px; }
+.topbar {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 14px;
+  padding: 12px 22px; background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px); border-bottom: 1px solid var(--rule);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; }
+.brand h1 { font-size: 15px; }
+.brand .tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em; color: var(--ink-3); text-transform: uppercase; }
+.topbar .spacer { flex: 1; }
+.topbar .who { font-size: 12px; color: var(--ink-2); }
+.topbar .who b { font-family: var(--font-mono); color: var(--ink); font-weight: 600; }
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
+.dot.off { background: var(--ink-3); }
+
+.wrap { max-width: 1400px; margin: 0 auto; padding: 20px 22px 0; }
+.metabar {
+  display: flex; flex-wrap: wrap; gap: 4px 22px; padding: 10px 14px; margin-bottom: 16px;
+  border: 1px solid var(--rule); border-radius: 2px; background: var(--surface);
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3);
+}
+.metabar b { color: var(--ink-2); font-weight: 500; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.metric {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 2px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.metric .k { font-size: 11px; letter-spacing: .06em; color: var(--ink-3); }
+.metric .v { font-family: var(--font-mono); font-size: 25px; font-weight: 600; line-height: 1.1; letter-spacing: -.02em; }
+.metric .v small { font-size: 12px; font-weight: 400; color: var(--ink-3); margin-left: 3px; }
+.metric .s { font-size: 11.5px; color: var(--ink-3); }
+.metric.alert .v { color: var(--signal); }
+
+.section-title {
+  display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px;
+  font-size: 12px; letter-spacing: .06em; color: var(--ink-2); text-transform: uppercase;
+}
+.section-title::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+.grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; margin-bottom: 22px; }
+.panel {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 2px;
+  padding: 12px 14px 8px; min-width: 0;
+}
+.panel > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.panel > header h2 { font-size: 12.5px; color: var(--ink-2); letter-spacing: .02em; }
+.panel > header .note { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
+.span-12 { grid-column: span 12; }
+.span-8 { grid-column: span 8; }
+.span-7 { grid-column: span 7; }
+.span-6 { grid-column: span 6; }
+.span-5 { grid-column: span 5; }
+.span-4 { grid-column: span 4; }
+.chart { width: 100%; height: 250px; }
+.chart.tall { height: 300px; }
+
+.scroll { max-height: 330px; overflow: auto; margin: 0 -4px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th {
+  position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 500;
+  font-size: 10.5px; letter-spacing: .06em; color: var(--ink-3); text-transform: uppercase;
+  padding: 6px 8px; background: var(--surface); border-bottom: 1px solid var(--rule-2); white-space: nowrap;
+}
+td { padding: 6px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+td.wrap-cell { white-space: normal; max-width: 320px; overflow-wrap: anywhere; }
+tr:hover td { background: var(--surface-2); }
+td.num, th.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.pill {
+  display: inline-block; padding: 0 6px; border-radius: 2px; font-family: var(--font-mono);
+  font-size: 10.5px; line-height: 17px; border: 1px solid var(--rule-2); color: var(--ink-2);
+}
+.pill.ok { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.pill.bad { color: var(--signal); border-color: var(--signal); background: var(--signal-soft); }
+.empty { color: var(--ink-3); font-size: 12px; padding: 18px 4px; text-align: center; }
+pre.logtail {
+  margin: 0; padding: 10px 12px; background: var(--surface-2); border-radius: 2px;
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; color: var(--ink-2);
+  max-height: 340px; overflow: auto; white-space: pre;
+}
+.tabs { display: flex; gap: 6px; }
+.tabs button { padding: 3px 9px; font-size: 11.5px; }
+.tabs button[aria-selected="true"] { background: var(--surface-2); border-color: var(--rule-2); color: var(--ink); }
+
+@media (max-width: 1080px) {
+  .span-8, .span-7, .span-6, .span-5, .span-4 { grid-column: span 12; }
+  .topbar { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+
+<!-- ---------------- 登录 ---------------- -->
+<div id="login">
+  <form class="login-card" id="loginForm" autocomplete="on">
+    <h1>数据看板</h1>
+    <p class="hint">管理员登录 · 账号密码见 config.json 的 admin 段</p>
+    <label for="u">账号</label>
+    <input id="u" name="username" type="text" autocomplete="username" required>
+    <label for="p">密码</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <div class="form-err" id="loginErr"></div>
+    <button class="primary wide" type="submit">登录</button>
+  </form>
+</div>
+
+<!-- ---------------- 看板 ---------------- -->
+<main id="dash" hidden>
+  <div class="topbar">
+    <div class="brand">
+      <h1>数据看板</h1>
+      <span class="tag">kcb admin</span>
+    </div>
+    <div class="spacer"></div>
+    <span class="who"><span class="dot" id="liveDot"></span><b id="whoName">-</b> · 更新于 <span id="lastSync" class="mono">-</span></span>
+    <label style="margin:0; display:flex; align-items:center; gap:6px; letter-spacing:0; font-size:12px; color:var(--ink-2)">
+      <input type="checkbox" id="autoRefresh" checked style="accent-color:var(--signal)"> 自动刷新
+    </label>
+    <button id="refreshBtn" type="button">刷新</button>
+    <button id="logoutBtn" type="button">退出</button>
+  </div>
+
+  <div class="wrap">
+    <div class="metabar" id="metabar"></div>
+    <div class="cards" id="cards"></div>
+
+    <h2 class="section-title">流量与登录</h2>
+    <div class="grid">
+      <div class="panel span-8">
+        <header><h2>近 7 天请求与错误</h2><span class="note">单位：次</span></header>
+        <div class="chart tall" id="chartTimeline"></div>
+      </div>
+      <div class="panel span-4">
+        <header><h2>今日登录成功率</h2><span class="note" id="rateNote">-</span></header>
+        <div class="chart tall" id="chartGauge"></div>
+      </div>
+      <div class="panel span-6">
+        <header><h2>今日时段分布</h2><span class="note">00 - 23 时</span></header>
+        <div class="chart" id="chartHourly"></div>
+      </div>
+      <div class="panel span-6">
+        <header><h2>接口平均耗时 Top</h2><span class="note">毫秒</span></header>
+        <div class="chart" id="chartEndpoints"></div>
+      </div>
+    </div>
+
+    <h2 class="section-title">访客构成</h2>
+    <div class="grid">
+      <div class="panel span-4">
+        <header><h2>设备类型</h2></header>
+        <div class="chart" id="chartDevices"></div>
+      </div>
+      <div class="panel span-4">
+        <header><h2>浏览器</h2></header>
+        <div class="chart" id="chartBrowsers"></div>
+      </div>
+      <div class="panel span-4">
+        <header><h2>响应状态</h2></header>
+        <div class="chart" id="chartStatus"></div>
+      </div>
+    </div>
+
+    <h2 class="section-title">用户与会话</h2>
+    <div class="grid">
+      <div class="panel span-7">
+        <header><h2>登录过的用户</h2><span class="note" id="usersNote">-</span></header>
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>学号 / 账号</th><th class="num">成功</th><th class="num">失败</th>
+              <th>最后登录</th><th>设备</th><th>浏览器 / 系统</th><th>IP</th>
+            </tr></thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel span-5">
+        <header><h2>当前在线账号</h2><span class="note" id="sessionsNote">-</span></header>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>账号</th><th>登录时间</th><th class="num">Cookie</th></tr></thead>
+            <tbody id="sessionsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <h2 class="section-title">登录明细</h2>
+    <div class="grid">
+      <div class="panel span-12">
+        <header><h2>最近登录记录</h2><span class="note" id="loginsNote">-</span></header>
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>时间</th><th>账号</th><th>结果</th><th>方式</th><th class="num">耗时</th>
+              <th>设备</th><th>浏览器 / 系统</th><th>IP</th><th>说明</th>
+            </tr></thead>
+            <tbody id="loginsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <h2 class="section-title">请求明细</h2>
+    <div class="grid">
+      <div class="panel span-7">
+        <header><h2>最近请求</h2><span class="note" id="reqNote">-</span></header>
+        <div class="scroll">
+          <table>
+            <thead><tr>
+              <th>时间</th><th>账号</th><th>方法</th><th>路径</th><th class="num">状态</th><th class="num">耗时</th>
+            </tr></thead>
+            <tbody id="reqBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel span-5">
+        <header><h2>最慢的请求</h2><span class="note">毫秒</span></header>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>时间</th><th>接口</th><th class="num">状态</th><th class="num">耗时</th></tr></thead>
+            <tbody id="slowBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <h2 class="section-title">原始日志</h2>
+    <div class="grid">
+      <div class="panel span-12">
+        <header>
+          <h2>日志尾部</h2>
+          <div class="tabs">
+            <button type="button" data-src="app" aria-selected="true">app.log</button>
+            <button type="button" data-src="events" aria-selected="false">events.jsonl</button>
+          </div>
+        </header>
+        <pre class="logtail" id="logtail">加载中…</pre>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="/vendor/echarts.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var TOKEN_KEY = "kcb.admin.token";
+  var USER_KEY = "kcb.admin.user";
+  var token = sessionStorage.getItem(TOKEN_KEY) || "";
+  var currentUser = sessionStorage.getItem(USER_KEY) || "";
+  var state = null;
+  var timer = null;
+  var logSource = "app";
+  var charts = {};
+
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  };
+  var fmt = function (n) {
+    if (n == null || n === "") return "-";
+    var num = Number(n);
+    if (!isFinite(num)) return String(n);
+    return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  };
+  var fmtDur = function (sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600),
+        m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    if (d) return d + "天" + h + "小时";
+    if (h) return h + "小时" + m + "分";
+    if (m) return m + "分" + s + "秒";
+    return s + "秒";
+  };
+
+  // ---------- 主题 ----------
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  function palette() {
+    var dark = document.documentElement.dataset.scheme === "dark";
+    return {
+      dark: dark,
+      ink: cssVar("--ink"),
+      ink2: cssVar("--ink-2"),
+      ink3: cssVar("--ink-3"),
+      rule: cssVar("--rule"),
+      surface: cssVar("--surface"),
+      signal: cssVar("--signal"),
+      ok: cssVar("--ok"),
+      series: dark
+        ? ["#5b9bd6", "#e07a63", "#d6a83f", "#5fa97f", "#a98bc9", "#4fa3a5", "#8a949a"]
+        : ["#2c5f8a", "#b23a25", "#8a6413", "#2c6a4e", "#6b4a8a", "#1d6b6d", "#4a5259"]
+    };
+  }
+
+  function baseText(p) {
+    return { color: p.ink2, fontFamily: '"IBM Plex Sans", system-ui, sans-serif', fontSize: 11 };
+  }
+  function axisCommon(p) {
+    return {
+      axisLine: { lineStyle: { color: p.rule } },
+      axisTick: { show: false },
+      axisLabel: { color: p.ink3, fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace" },
+      splitLine: { lineStyle: { color: p.rule, type: "dashed" } }
+    };
+  }
+
+  // ---------- 接口 ----------
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["Authorization"] = "Bearer " + token;
+    if (opts.body) headers["Content-Type"] = "application/json";
+    return fetch(path, {
+      method: opts.method || "GET",
+      headers: headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    }).then(function (res) {
+      if (res.status === 401) { signOut(); throw new Error("登录已失效"); }
+      return res.json().then(function (data) {
+        if (!res.ok) throw new Error(data.detail || data.message || ("HTTP " + res.status));
+        return data;
+      });
+    });
+  }
+
+  // ---------- 登录 / 退出 ----------
+  function showLogin() {
+    $("login").hidden = false;
+    $("dash").hidden = true;
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+  function signOut() {
+    token = ""; currentUser = "";
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
+    showLogin();
+    $("loginErr").textContent = "登录已失效，请重新登录";
+  }
+  function showDash() {
+    $("login").hidden = true;
+    $("dash").hidden = false;
+    $("whoName").textContent = currentUser || "-";
+    Object.keys(charts).forEach(function (k) { if (charts[k]) charts[k].resize(); });
+    refresh();
+    loadLogs();
+    schedule();
+  }
+
+  $("loginForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var btn = e.target.querySelector("button");
+    btn.disabled = true;
+    $("loginErr").textContent = "";
+    fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("u").value, password: $("p").value })
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok) throw new Error(data.detail || "登录失败");
+        token = data.token;
+        currentUser = data.username;
+        sessionStorage.setItem(TOKEN_KEY, token);
+        sessionStorage.setItem(USER_KEY, currentUser);
+        showDash();
+      });
+    }).catch(function (err) {
+      $("loginErr").textContent = err.message || "登录失败";
+    }).finally(function () { btn.disabled = false; });
+  });
+
+  $("logoutBtn").addEventListener("click", function () {
+    api("/api/admin/logout", { method: "POST" }).catch(function () {}).finally(signOut);
+  });
+  $("refreshBtn").addEventListener("click", function () { refresh(); loadLogs(); });
+  $("autoRefresh").addEventListener("change", function () {
+    localStorage.setItem("kcb.admin.auto", this.checked ? "1" : "0");
+    schedule();
+  });
+
+  function schedule() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (!$("autoRefresh").checked) return;
+    timer = setInterval(function () {
+      if (document.hidden) return;
+      refresh();
+      loadLogs();
+    }, 15000);
+  }
+
+  // ---------- 数据 ----------
+  function refresh() {
+    $("liveDot").className = "dot off";
+    return api("/api/admin/stats").then(function (data) {
+      state = data;
+      render(data);
+      $("liveDot").className = "dot";
+      $("lastSync").textContent = (data.meta.now || "").slice(11) || "-";
+    }).catch(function (err) {
+      $("lastSync").textContent = "失败：" + err.message;
+    });
+  }
+
+  function loadLogs() {
+    api("/api/admin/logs?source=" + logSource + "&lines=150").then(function (data) {
+      var text = (data.lines || []).join("\n") || "（暂无日志）";
+      $("logtail").textContent = text;
+    }).catch(function (err) {
+      $("logtail").textContent = "读取日志失败：" + err.message;
+    });
+  }
+
+  document.querySelectorAll(".tabs button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      document.querySelectorAll(".tabs button").forEach(function (x) { x.setAttribute("aria-selected", "false"); });
+      b.setAttribute("aria-selected", "true");
+      logSource = b.dataset.src;
+      loadLogs();
+    });
+  });
+
+  // ---------- 渲染 ----------
+  function render(d) {
+    var c = d.cards, m = d.meta;
+
+    $("metabar").innerHTML = [
+      ["运行时长", fmtDur(m.uptime_seconds)],
+      ["启动于", m.started_at || "-"],
+      ["版本", m.version || "-"],
+      ["日志级别", m.log_level || "-"],
+      ["事件文件", (m.events_file || "-") + (m.events_size_kb != null ? "（" + m.events_size_kb + " KB）" : "")],
+      ["内存事件", fmt(m.events_loaded) + " 条"],
+      ["Python", m.python || "-"],
+      ["管理员", m.admin_user || "-"]
+    ].map(function (row) {
+      return "<span><b>" + esc(row[0]) + "</b> " + esc(row[1]) + "</span>";
+    }).join("");
+
+    var metrics = [
+      { k: "在线账号", v: fmt(c.sessions), s: "每账号一个会话" },
+      { k: "累计登录用户", v: fmt(c.users_total), s: "今日 " + fmt(c.users_today) + " 人" },
+      { k: "今日登录", v: fmt(c.logins_today), s: "失败 " + fmt(c.fails_today) + " 次" },
+      { k: "登录成功率", v: c.success_rate + "<small>%</small>", s: "基于今日 " + fmt(c.logins_today + c.fails_today) + " 次尝试", alert: c.success_rate > 0 && c.success_rate < 75 },
+      { k: "今日请求", v: fmt(c.requests_today), s: "错误 " + fmt(c.errors_today) + "（" + c.error_rate + "%）", alert: c.error_rate > 5 },
+      { k: "平均耗时", v: c.avg_ms + "<small>ms</small>", s: "P95 " + c.p95_ms + " ms" },
+      { k: "今日峰值", v: c.peak_hour, s: fmt(c.peak_hour_count) + " 次请求" },
+      { k: "管理后台登录", v: fmt(c.admin_logins), s: "当前在线 " + fmt(c.admin_online || 0) }
+    ];
+    $("cards").innerHTML = metrics.map(function (mt) {
+      return '<div class="metric' + (mt.alert ? " alert" : "") + '">' +
+        '<span class="k">' + esc(mt.k) + "</span>" +
+        '<span class="v">' + mt.v + "</span>" +
+        '<span class="s">' + esc(mt.s) + "</span></div>";
+    }).join("");
+
+    $("rateNote").textContent = c.logins_today + " 成功 / " + c.fails_today + " 失败";
+    $("usersNote").textContent = c.users_total + " 人";
+    $("sessionsNote").textContent = c.sessions + " 个账号";
+    $("loginsNote").textContent = d.recent_logins.length + " 条";
+    $("reqNote").textContent = d.recent_requests.length + " 条";
+
+    renderUsers(d.users);
+    renderSessions(d.sessions_detail || []);
+    renderLogins(d.recent_logins);
+    renderRequests(d.recent_requests);
+    renderSlow(d.slowest);
+    renderCharts(d);
+  }
+
+  function rows(body, html, colspan) {
+    if (!html) {
+      body.innerHTML = '<tr><td colspan="' + colspan + '" class="empty">暂无数据</td></tr>';
+      return;
+    }
+    body.innerHTML = html;
+  }
+
+  function renderUsers(list) {
+    rows($("usersBody"), list.map(function (u) {
+      return "<tr><td class='mono'>" + esc(u.username) + "</td>" +
+        '<td class="num">' + fmt(u.logins) + "</td>" +
+        '<td class="num">' + fmt(u.fails) + "</td>" +
+        '<td class="mono">' + esc(u.last_login_text) + "</td>" +
+        "<td>" + esc(u.device) + "</td>" +
+        "<td>" + esc(u.browser) + " / " + esc(u.os) + "</td>" +
+        '<td class="mono">' + esc(u.last_ip) + "</td></tr>";
+    }).join(""), 7);
+  }
+
+  function renderSessions(list) {
+    rows($("sessionsBody"), list.map(function (s) {
+      var ts = s.created ? new Date(s.created * 1000) : null;
+      var text = ts ? ts.toLocaleString("zh-CN", { hour12: false }) : "-";
+      return "<tr><td class='mono'>" + esc(s.username) + "</td>" +
+        '<td class="mono">' + esc(text) + "</td>" +
+        '<td class="num">' + fmt(s.cookies) + "</td></tr>";
+    }).join(""), 3);
+  }
+
+  function renderLogins(list) {
+    rows($("loginsBody"), list.map(function (l) {
+      return '<tr><td class="mono">' + esc(l.time) + "</td>" +
+        "<td class='mono'>" + esc(l.username) + "</td>" +
+        '<td><span class="pill ' + (l.ok ? "ok" : "bad") + '">' + (l.ok ? "成功" : "失败") + "</span></td>" +
+        "<td>" + esc(l.mode) + "</td>" +
+        '<td class="num">' + fmt(l.ms) + "</td>" +
+        "<td>" + esc(l.device) + "</td>" +
+        "<td>" + esc(l.browser) + " / " + esc(l.os) + "</td>" +
+        '<td class="mono">' + esc(l.ip) + "</td>" +
+        '<td class="wrap-cell">' + esc(l.reason) + "</td></tr>";
+    }).join(""), 9);
+  }
+
+  function renderRequests(list) {
+    rows($("reqBody"), list.map(function (r) {
+      var cls = r.status >= 500 ? "bad" : (r.status >= 400 ? "bad" : "ok");
+      return '<tr><td class="mono">' + esc((r.time || "").slice(11)) + "</td>" +
+        "<td class='mono'>" + esc(r.username) + "</td>" +
+        "<td>" + esc(r.method) + "</td>" +
+        '<td class="mono">' + esc(r.path) + "</td>" +
+        '<td class="num"><span class="pill ' + cls + '">' + fmt(r.status) + "</span></td>" +
+        '<td class="num">' + fmt(r.ms) + "</td></tr>";
+    }).join(""), 6);
+  }
+
+  function renderSlow(list) {
+    rows($("slowBody"), list.map(function (s) {
+      return '<tr><td class="mono">' + esc((s.time || "").slice(11)) + "</td>" +
+        '<td class="mono wrap-cell">' + esc(s.path) + "</td>" +
+        '<td class="num">' + fmt(s.status) + "</td>" +
+        '<td class="num">' + fmt(s.ms) + "</td></tr>";
+    }).join(""), 4);
+  }
+
+  // ---------- 图表 ----------
+  function chart(id) {
+    if (!charts[id]) charts[id] = echarts.init($(id), null, { renderer: "canvas" });
+    return charts[id];
+  }
+
+  function renderCharts(d) {
+    var p = palette();
+    var text = baseText(p);
+
+    // 1. 近 7 天
+    chart("chartTimeline").setOption({
+      textStyle: text,
+      grid: { left: 40, right: 16, top: 34, bottom: 26 },
+      tooltip: { trigger: "axis", backgroundColor: p.surface, borderColor: p.rule, textStyle: { color: p.ink, fontSize: 12 } },
+      legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 8, textStyle: { color: p.ink3, fontSize: 11 } },
+      xAxis: Object.assign({ type: "category", data: d.timeline.labels }, axisCommon(p), { splitLine: { show: false } }),
+      yAxis: Object.assign({ type: "value", minInterval: 1 }, axisCommon(p)),
+      series: [
+        { name: "请求", type: "bar", data: d.timeline.requests, barMaxWidth: 26, itemStyle: { color: p.series[0], borderRadius: [2, 2, 0, 0] } },
+        { name: "错误", type: "line", data: d.timeline.errors, smooth: true, symbolSize: 5, lineStyle: { width: 1.6, color: p.signal }, itemStyle: { color: p.signal } },
+        { name: "登录", type: "line", data: d.timeline.logins, smooth: true, symbolSize: 5, lineStyle: { width: 1.6, color: p.ok, type: "dashed" }, itemStyle: { color: p.ok } }
+      ]
+    }, true);
+
+    // 2. 成功率仪表
+    chart("chartGauge").setOption({
+      series: [{
+        type: "gauge", startAngle: 210, endAngle: -30, min: 0, max: 100, radius: "88%",
+        progress: { show: true, width: 10, itemStyle: { color: d.cards.success_rate >= 80 ? p.ok : p.signal } },
+        axisLine: { lineStyle: { width: 10, color: [[1, p.rule]] } },
+        axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false }, pointer: { show: false },
+        anchor: { show: false },
+        title: { show: true, offsetCenter: [0, "52%"], color: p.ink3, fontSize: 11.5 },
+        detail: { valueAnimation: true, offsetCenter: [0, "8%"], formatter: "{value}%", fontSize: 34, fontWeight: 600, color: p.ink, fontFamily: "IBM Plex Mono, monospace" },
+        data: [{ value: d.cards.success_rate, name: "今日 " + (d.cards.logins_today + d.cards.fails_today) + " 次尝试" }]
+      }]
+    }, true);
+
+    // 3. 今日时段
+    chart("chartHourly").setOption({
+      textStyle: text,
+      grid: { left: 36, right: 16, top: 30, bottom: 24 },
+      tooltip: { trigger: "axis", backgroundColor: p.surface, borderColor: p.rule, textStyle: { color: p.ink, fontSize: 12 } },
+      legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 8, textStyle: { color: p.ink3, fontSize: 11 } },
+      xAxis: Object.assign({}, axisCommon(p), {
+        type: "category", data: d.hourly.labels, splitLine: { show: false },
+        axisLabel: Object.assign({}, axisCommon(p).axisLabel, { interval: 1 })
+      }),
+      yAxis: Object.assign({ type: "value", minInterval: 1 }, axisCommon(p)),
+      series: [
+        { name: "请求", type: "bar", data: d.hourly.requests, barMaxWidth: 16, itemStyle: { color: p.series[0] } },
+        { name: "登录", type: "bar", data: d.hourly.logins, barMaxWidth: 16, itemStyle: { color: p.series[2] } }
+      ]
+    }, true);
+
+    // 4. 接口耗时
+    var eps = (d.endpoints || []).slice(0, 8).slice().reverse();
+    chart("chartEndpoints").setOption({
+      textStyle: text,
+      grid: { left: 118, right: 34, top: 12, bottom: 22 },
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, backgroundColor: p.surface, borderColor: p.rule, textStyle: { color: p.ink, fontSize: 12 } },
+      xAxis: Object.assign({}, axisCommon(p), { type: "value" }),
+      yAxis: Object.assign({}, axisCommon(p), {
+        type: "category", data: eps.map(function (e) { return e.path; }),
+        splitLine: { show: false },
+        axisLabel: Object.assign({}, axisCommon(p).axisLabel, { fontSize: 10 })
+      }),
+      series: [{
+        type: "bar", data: eps.map(function (e) { return e.avg_ms; }), barMaxWidth: 14,
+        itemStyle: { color: p.series[0] },
+        label: { show: true, position: "right", color: p.ink3, fontSize: 10, fontFamily: "IBM Plex Mono, monospace" }
+      }]
+    }, true);
+
+    // 5. 设备
+    chart("chartDevices").setOption({
+      textStyle: text,
+      tooltip: { trigger: "item", backgroundColor: p.surface, borderColor: p.rule, textStyle: { color: p.ink, fontSize: 12 } },
+      series: [{
+        type: "pie", radius: ["48%", "74%"], center: ["50%", "52%"], avoidLabelOverlap: true,
+        itemStyle: { borderColor: p.surface, borderWidth: 2 },
+        label: { color: p.ink2, fontSize: 11, formatter: "{b} {c}" },
+        labelLine: { lineStyle: { color: p.rule } },
+        data: (d.devices.length ? d.devices : [{ name: "暂无", value: 1 }]).map(function (x, i) {
+          return { name: x.name, value: x.value, itemStyle: { color: p.series[i % p.series.length] } };
+        })
+      }]
+    }, true);
+
+    // 6. 浏览器
+    var bs = (d.browsers || []).slice(0, 6).slice().reverse();
+    chart("chartBrowsers").setOption({
+      textStyle: text,
+      grid: { left: 92, right: 30, top: 10, bottom: 20 },
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, backgroundColor: p.surface, borderColor: p.rule, textStyle: { color: p.ink, fontSize: 12 } },
+      xAxis: Object.assign({}, axisCommon(p), { type: "value", minInterval: 1 }),
+      yAxis: Object.assign({}, axisCommon(p), {
+        type: "category", data: bs.map(function (b) { return b.name; }),
+        splitLine: { show: false }
+      }),
+      series: [{
+        type: "bar", data: bs.map(function (b) { return b.value; }), barMaxWidth: 14,
+        itemStyle: { color: p.series[3] }
+      }]
+    }, true);
+
+    // 7. 状态码
+    chart("chartStatus").setOption({
+      textStyle: text,
+      tooltip: { trigger: "item", backgroundColor: p.surface, borderColor: p.rule, textStyle: { color: p.ink, fontSize: 12 } },
+      series: [{
+        type: "pie", radius: ["46%", "74%"], center: ["50%", "52%"],
+        itemStyle: { borderColor: p.surface, borderWidth: 2 },
+        label: { color: p.ink2, fontSize: 11, formatter: "{b} {c}" },
+        labelLine: { lineStyle: { color: p.rule } },
+        data: (d.status_codes.length ? d.status_codes : [{ name: "暂无", value: 1 }]).map(function (x, i) {
+          var good = String(x.name).charAt(0) === "2";
+          return {
+            name: x.name, value: x.value,
+            itemStyle: { color: good ? p.ok : (String(x.name) === "暂无" ? p.rule : p.signal) }
+          };
+        })
+      }]
+    }, true);
+  }
+
+  // ---------- 主题 / 尺寸 ----------
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+    if (document.documentElement.dataset.theme !== "system") return;
+    document.documentElement.dataset.scheme = this.matches ? "dark" : "light";
+    if (state) renderCharts(state);
+  });
+  window.addEventListener("resize", function () {
+    Object.keys(charts).forEach(function (k) { if (charts[k]) charts[k].resize(); });
+  });
+
+  // ---------- 启动 ----------
+  $("autoRefresh").checked = localStorage.getItem("kcb.admin.auto") !== "0";
+  if (token) showDash();
+  else showLogin();
+})();
+</script>
+</body>
+</html>
