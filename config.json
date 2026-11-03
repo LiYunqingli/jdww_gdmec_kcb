@@ -1,0 +1,70 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "title": "课表代理",
+    "version": "1.0",
+    "cors_origins": ["*"]
+  },
+
+  "logging": {
+    "level": "DEBUG",
+    "format": "%(asctime)s | %(levelname)-7s | %(name)-16s | %(message)s",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "color": true,
+    "console": {
+      "enabled": true,
+      "level": "INFO"
+    },
+    "file": {
+      "enabled": true,
+      "path": "logs/app.log",
+      "level": "DEBUG",
+      "max_bytes": 2097152,
+      "backup_count": 5,
+      "encoding": "utf-8"
+    },
+    "quiet": {
+      "httpx": "WARNING",
+      "httpcore": "WARNING",
+      "uvicorn.access": "WARNING",
+      "asyncio": "WARNING"
+    }
+  },
+
+  "paths": {
+    "data_dir": "data",
+    "session_file": "sessions.json",
+    "frontend_dir": "frontend"
+  },
+
+  "http": {
+    "timeout": 25,
+    "max_redirects": 14,
+    "max_redirects_login": 16,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  },
+
+  "jwxt": {
+    "base": "https://jwxt.gdmec.edu.cn",
+    "portal": "https://home.gdmec.edu.cn",
+    "sso": "https://auth.gdmec.edu.cn"
+  },
+
+  "terms": {
+    "3": "第一学期",
+    "12": "第二学期",
+    "16": "第三学期"
+  },
+
+  "timetable": {
+    "period_minutes": 40,
+    "break_between_periods": 10,
+    "break_between_pairs": 25,
+    "blocks": [
+      [1, 4, "08:30"],
+      [5, 8, "14:10"],
+      [9, 12, "19:00"]
+    ]
+  }
+}

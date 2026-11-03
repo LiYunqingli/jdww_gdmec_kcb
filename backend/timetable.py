@@ -8,31 +8,31 @@
 """
 from __future__ import annotations
 
+import functools
+import logging
 import re
 from typing import Any
 
-# ---------------- 作息时间 ----------------
-# 一节课 40 分钟；同一大节内两小节之间歇 10 分钟，
-# 每上完两节歇 25 分钟（2→3、4→5、6→7、8→9）。
-# 上午 / 下午 / 晚上各大节的开始时间是固定的，午饭、晚饭时长由锚点自然决定，
-# 所以第 9 节从 19:00 开始这一点是靠 BLOCKS 里第三个锚点保证的，
-# 第 8 节 17:35 下课后即晚饭时间。
-#
-# 上午（实测）：08:30-09:10 / 09:20-10:00 / 10:25-11:05 / 11:15-11:55
-PERIOD_MIN = 40
-BREAK_BETWEEN_PERIODS = 10
-BREAK_BETWEEN_PAIRS = 25
+from . import config
 
-# (起始节次, 结束节次, 大节开始时间)
-BLOCKS = [
-    (1, 4, "08:30"),    # 上午
-    (5, 8, "14:10"),    # 下午
-    (9, 12, "19:00"),   # 晚上
-]
+log = logging.getLogger("kcb.timetable")
+
+# ---------------- 作息时间 ----------------
+# 一节课多久、课间歇多久、上午/下午/晚上各大节几点打铃，全部在 config.json 的
+# timetable 段里。默认值（学校现行作息）：
+#   period_minutes=40，同大节内两小节课间 10 分钟，每上完两节歇 25 分钟，
+#   上午 4 节 08:30 起、下午 4 节 14:10 起、晚上 4 节 19:00 起。
+# 大节之间的午饭、晚饭时长不写死，由下一个大节的锚点时间自然决定。
+_DEFAULT_SCHEDULE = {
+    "period_minutes": 40,
+    "break_between_periods": 10,
+    "break_between_pairs": 25,
+    "blocks": [[1, 4, "08:30"], [5, 8, "14:10"], [9, 12, "19:00"]],
+}
 
 
 def _to_min(hhmm: str) -> int:
-    h, m = hhmm.split(":")
+    h, m = str(hhmm).split(":")
     return int(h) * 60 + int(m)
 
 
@@ -40,19 +40,31 @@ def _fmt(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
-def _build_slots() -> list[dict[str, Any]]:
+@functools.lru_cache(maxsize=1)
+def get_slots() -> list[dict[str, Any]]:
+    """按配置算出全部节次的起止时间，首次调用时算一次。"""
+    cfg = dict(_DEFAULT_SCHEDULE)
+    cfg.update({k: v for k, v in (config.get("timetable") or {}).items() if k in cfg})
+    period = int(cfg["period_minutes"])
+    break_inner = int(cfg["break_between_periods"])
+    break_pair = int(cfg["break_between_pairs"])
+
     slots: list[dict[str, Any]] = []
-    for first, last, anchor in BLOCKS:
+    for item in cfg["blocks"]:
+        try:
+            first, last, anchor = int(item[0]), int(item[1]), str(item[2])
+        except (TypeError, ValueError, IndexError):
+            log.warning("timetable.blocks 里有非法项，已跳过：%r", item)
+            continue
         cur = _to_min(anchor)
         for idx in range(first, last + 1):
-            slots.append({"idx": idx, "start": _fmt(cur), "end": _fmt(cur + PERIOD_MIN)})
-            cur += PERIOD_MIN + (
-                BREAK_BETWEEN_PERIODS if idx % 2 == 1 else BREAK_BETWEEN_PAIRS
-            )
+            slots.append({"idx": idx, "start": _fmt(cur), "end": _fmt(cur + period)})
+            cur += period + (break_inner if idx % 2 == 1 else break_pair)
+    log.debug("作息已按配置展开：%d 节，从 %s 到 %s", len(slots),
+              slots[0]["start"] if slots else "-", slots[-1]["end"] if slots else "-")
+    if not slots:
+        log.warning("timetable.blocks 配置为空或全部非法，课表节次将不可用，请检查 config.json")
     return slots
-
-
-SLOTS = _build_slots()
 
 WEEKDAY_CN = ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -157,6 +169,9 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
 
     courses: list[dict[str, Any]] = []
     seen: set[tuple] = set()
+    skipped_bad_weekday = 0
+    skipped_no_span = 0
+    duplicated = 0
 
     for i, item in enumerate(kb):
         if not isinstance(item, dict):
@@ -166,10 +181,15 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             weekday = 0
         if not (1 <= weekday <= 7):
+            skipped_bad_weekday += 1
+            log.debug("跳过第 %d 条：星期值非法 xqj=%r 课程=%r", i, item.get("xqj"), item.get("kcmc"))
             continue
 
         start, end = parse_span(item)
         if start < 1:
+            skipped_no_span += 1
+            log.debug("跳过第 %d 条：节次无法解析 jcs=%r jcma=%r 课程=%r",
+                      i, item.get("jcs"), item.get("jcma"), item.get("kcmc"))
             continue
 
         name = _pick(item, "kcmc", default="未命名课程")
@@ -177,9 +197,12 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
         weeks_text = _pick(item, "zcd")
         teacher = _pick(item, "xm")
         weeks = parse_weeks(weeks_text)
+        if not weeks:
+            log.debug("课程无有效周次，周次串=%r 课程=%r", weeks_text, name)
 
         key = (weekday, start, end, name, room, weeks_text)
         if key in seen:
+            duplicated += 1
             continue
         seen.add(key)
 
@@ -221,11 +244,16 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
         "term_name": _pick(xsxx, "XNMC"),
     }
 
+    log.debug(
+        "规整完成：原始 %d 条 → 有效 %d 门（去重 %d 条，星期非法 %d 条，无节次 %d 条），实践环节 %d 项",
+        len(kb), len(courses), duplicated, skipped_bad_weekday, skipped_no_span, len(practices),
+    )
+
     return {
         "student": student,
         "courses": courses,
         "practices": practices,
-        "slots": SLOTS,
+        "slots": get_slots(),
         "meta": {
             "course_count": len(courses),
             "max_week": max((max(c["weeks"]) for c in courses if c["weeks"]), default=0),

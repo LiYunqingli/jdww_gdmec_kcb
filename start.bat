@@ -74,7 +74,9 @@ echo.
 
 start "" /min powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:%PORT%'"
 
-%PY% -m uvicorn backend.app:app --host %HOST% --port %PORT%
+set "KCB_HOST=%HOST%"
+set "KCB_PORT=%PORT%"
+%PY% -m backend.app
 
 echo.
 echo ·þÎñÒÑÍ£Ö¹¡£

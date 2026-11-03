@@ -22,17 +22,55 @@
 
 ## 作息时间
 
-课表上的上下课时间由 `backend/timetable.py` 顶部的常量按规则算出来，不是写死的时间表：
+课表上的上下课时间由 `config.json` 的 `timetable` 段按规则算出来，不是写死的时间表：
 
-```python
-PERIOD_MIN = 40             # 一节课 40 分钟
-BREAK_BETWEEN_PERIODS = 10  # 同一大节内两小节之间
-BREAK_BETWEEN_PAIRS = 25    # 每上完两节
-BLOCKS = [(1, 4, "08:30"), (5, 8, "14:10"), (9, 12, "19:00")]
+```json
+"timetable": {
+  "period_minutes": 40,
+  "break_between_periods": 10,
+  "break_between_pairs": 25,
+  "blocks": [[1, 4, "08:30"], [5, 8, "14:10"], [9, 12, "19:00"]]
+}
 ```
 
-上午 4 节 08:30 起（08:30-09:10 / 09:20-10:00 / 10:25-11:05 / 11:15-11:55），下午 4 节 14:10 起，晚上 19:00 起。大节之间的午饭、晚饭时长不写死，由下一个大节的开始时间决定。学校调整作息时只改这几个常量即可，前端演示数据 `MOCK_SLOTS`（`frontend/app.js`）记得同步。
+上午 4 节 08:30 起（08:30-09:10 / 09:20-10:00 / 10:25-11:05 / 11:15-11:55），下午 4 节 14:10 起，晚上 19:00 起。大节之间的午饭、晚饭时长不写死，由下一个大节的开始时间决定。学校调整作息时只改 `config.json` 里这几个值、重启即可，前端演示数据 `MOCK_SLOTS`（`frontend/app.js`）记得同步。
 
+
+## 配置与日志
+
+所有可调项都在项目根目录的 **`config.json`**，改完重启生效。代码里不再有散落的设置常量。
+
+| 段 | 管什么 |
+| --- | --- |
+| `server` | 标题、版本、默认 host / port、CORS 白名单 |
+| `logging` | 日志级别、格式、控制台与文件两路输出、第三方库降噪 |
+| `paths` | `data/`、会话文件名、前端目录 |
+| `http` | 请求超时、重定向上限、User-Agent |
+| `jwxt` | 教务 / 门户 / 统一认证三个域名 |
+| `terms` | 学期代码 → 中文名（`3` / `12` / `16`） |
+| `timetable` | 作息：单节时长、课间、各大节打铃时间 |
+
+日志级别只写一个 `logging.level` 就够：
+
+```json
+"logging": {
+  "level": "DEBUG",
+  "console": { "enabled": true, "level": "INFO" },
+  "file":    { "enabled": true, "path": "logs/app.log", "level": "DEBUG", "max_bytes": 2097152, "backup_count": 5 }
+}
+```
+
+- `logging.level` 是**总闸**：设成 `WARNING` 就只剩警告和错误，两路输出一起安静；设成 `DEBUG` 才有最全的细节。
+- `console.level` / `file.level` 各自只能比总闸更严，用来让"文件记全量、控制台只看重点"。默认总闸 DEBUG、控制台 INFO、文件 DEBUG——终端安静，日志文件里留着排查用的完整记录。
+- 控制台输出重定向时自动去掉颜色；文件固定 UTF-8、按 2 MB 轮转、留 5 份。
+- 临时改级别不用动文件：启动命令前加 `KCB_LOG_LEVEL=WARNING`（或 `DEBUG`），环境变量优先级最高。
+- 第三方库（`httpx` / `httpcore` / `uvicorn.access`）默认压到 WARNING，需要时在 `logging.quiet` 里调。
+
+配置写坏了不会让服务起不来：文件缺失或 JSON 语法错误就整体回落到内置默认值，单项类型写错只忽略那一项，两种情况都会在启动日志里打一条 WARNING 说明。
+
+日志内容：启动 / 停止、每个 `/api` 请求的耗时与状态码、登录结果（学号脱敏成 `19****01`，不记录密码和 cookie 值）、教务接口往返与课表规整统计（去重了几条、跳过了几条）。异常不再被 `except: pass` 静默吞掉。
+
+> `start.bat` 会自动探测 8000-8010 的空闲端口，所以走它启动时端口以探测结果为准（`server.port` 只是 `python -m backend.app` 的默认值）；host / port 都能用 `KCB_HOST` / `KCB_PORT` 覆盖。
 
 ## 快速开始
 
@@ -53,6 +91,8 @@ start.bat lan
 
 ```bash
 pip install -r requirements.txt
+python -m backend.app                  # 读 config.json 的 host / port
+# 或指定端口：
 python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
@@ -62,7 +102,10 @@ python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ## 目录结构
 
 ```
+config.json       全部可调参数（服务、日志、域名、作息），唯一设置入口
 backend/
+  config.py       读 config.json，深合并默认值，配置写坏也不崩
+  logging_setup.py 日志初始化：控制台 + 轮转文件，级别来自配置
   app.py          FastAPI 接口层：登录、学年学期、课表、会话持久化
   jwxt.py         教务系统客户端：SSO 全链路 + 课表拉取
   jwxt_rsa.py     正方教务本地登录用的 RSA(PKCS#1 v1.5) 加密（保留备用）
@@ -72,6 +115,7 @@ frontend/
   app.js          无框架，原生 JS
   style.css       设计令牌（配色 / 字体 / 行高）+ 深浅色 + 响应式
 data/             会话快照（运行时生成，已 gitignore）
+logs/             运行日志（运行时生成，已 gitignore）
 start.bat         Windows 一键启动
 ```
 
@@ -118,7 +162,6 @@ GET  /jwglxt/ticketlogin?uid=...&verify=...           → 教务会话建立
 4. **Cookie 持久化必须带 domain**。只存 name/value，重启后 httpx 不知道往哪个域发，会话直接失效。
 5. **`start.bat` 必须是 GBK + CRLF**。UTF-8 + LF 会让 cmd 逐字节解析错乱，
    报一堆"不是内部或外部命令"。
-
 ## 免责声明
 
 个人自用项目，只读教务系统的公开数据，不写库、不改成绩、不绕过任何权限校验。

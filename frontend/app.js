@@ -999,7 +999,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------------- 演示数据（?mock=1） ---------------- */
-/* 与后端 backend/timetable.py 的 SLOTS 保持一致：
+/* 与后端 config.json 的 timetable 段保持一致（backend/timetable.py 按它展开节次）：
    40 分钟一节，同大节内歇 10 分钟，每两节后歇 25 分钟，
    上午 08:30 / 下午 14:10 / 晚上 19:00 起。 */
 const MOCK_SLOTS = [
