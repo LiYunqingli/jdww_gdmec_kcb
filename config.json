@@ -38,6 +38,10 @@
     "frontend_dir": "frontend"
   },
 
+  "session": {
+    "single": true
+  },
+
   "http": {
     "timeout": 25,
     "max_redirects": 14,
@@ -55,6 +59,23 @@
     "3": "第一学期",
     "12": "第二学期",
     "16": "第三学期"
+  },
+
+  "admin": {
+    "enabled": true,
+    "username": "admin",
+    "password": "change-me",
+    "session_hours": 12,
+    "max_login_fails": 5,
+    "fail_window_minutes": 10
+  },
+
+  "audit": {
+    "enabled": true,
+    "path": "logs/events.jsonl",
+    "max_bytes": 5242880,
+    "backup_count": 3,
+    "memory_events": 5000
   },
 
   "timetable": {

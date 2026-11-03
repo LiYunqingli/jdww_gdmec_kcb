@@ -128,7 +128,9 @@ async function api(path, opts = {}) {
   try { data = await res.json(); } catch { /* 非 JSON 响应 */ }
   if (res.status === 401 && !path.startsWith("/api/login")) {
     store.token = "";
-    showLogin("登录已过期，请重新登录");
+    // 后端会说明是"过期"还是"账号在别处登录把这里顶掉了"，有就照抄
+    const detail = data && (data.detail || data.message);
+    showLogin(typeof detail === "string" && detail ? detail : "登录已过期，请重新登录");
     throw new Error("unauthorized");
   }
   if (!res.ok) {

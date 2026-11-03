@@ -51,6 +51,10 @@ DEFAULTS: dict[str, Any] = {
         "session_file": "sessions.json",
         "frontend_dir": "frontend",
     },
+    "session": {
+        # 同一账号只保留最新一个会话：再次登录会把旧令牌顶下线
+        "single": True,
+    },
     "http": {
         "timeout": 25,
         "max_redirects": 14,
@@ -66,6 +70,21 @@ DEFAULTS: dict[str, Any] = {
         "sso": "https://auth.gdmec.edu.cn",
     },
     "terms": {"3": "第一学期", "12": "第二学期", "16": "第三学期"},
+    "admin": {
+        "enabled": True,
+        "username": "admin",
+        "password": "kcb-admin",
+        "session_hours": 12,
+        "max_login_fails": 5,
+        "fail_window_minutes": 10,
+    },
+    "audit": {
+        "enabled": True,
+        "path": "logs/events.jsonl",
+        "max_bytes": 5242880,
+        "backup_count": 3,
+        "memory_events": 5000,
+    },
     "timetable": {
         "period_minutes": 40,
         "break_between_periods": 10,
