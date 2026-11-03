@@ -60,6 +60,8 @@ class JwxtClient:
     ):
         self.label = label or "-"
         self.username = ""
+        # 同一页面短时间内只拉一次：is_alive() 和 student_info() 要的是同一个首页
+        self._pages: dict[str, tuple[float, httpx.Response]] = {}
         self.http = httpx.Client(
             timeout=TIMEOUT,
             follow_redirects=False,
@@ -98,6 +100,7 @@ class JwxtClient:
 
     def load_cookies(self, cookies: Any) -> None:
         """支持 [{name,value,domain,path}]（推荐）或 {name: value}（兼容旧数据）。"""
+        self._pages.clear()  # 换了身份，页面缓存必须作废
         if isinstance(cookies, dict):
             for k, v in cookies.items():
                 self.http.cookies.set(k, v)
@@ -117,6 +120,25 @@ class JwxtClient:
 
     def _get(self, url: str, **kw) -> httpx.Response:
         return self.http.get(url, **kw)
+
+    def _cached_get(self, url: str, ttl: float = 10.0, **kw) -> httpx.Response:
+        """短时间内的同一个页面复用上次响应。
+
+        探活（只看页面够不够长）和学生信息（从同一页正则取姓名）以前各拉一次，
+        现在一次就够；教务首页几百 KB，省下的是实打实的一跳往返。
+        只缓存真正有效的大页面，登录失败那种几十字节的错误页不缓存。
+        """
+        now = time.monotonic()
+        hit = self._pages.get(url)
+        if hit and now - hit[0] < ttl:
+            self._debug("复用 %.1fs 前的页面：%s", now - hit[0], url)
+            return hit[1]
+        resp = self._get(url, **kw)
+        if resp.status_code == 200 and len(resp.text) > 2000:
+            self._pages[url] = (now, resp)
+        else:
+            self._pages.pop(url, None)
+        return resp
 
     def _walk(self, url: str, max_hops: int | None = None, stop_on: str | None = None) -> tuple[str, httpx.Response]:
         """沿 30x 一路跟到底，返回最终 URL 与响应。"""
@@ -141,7 +163,7 @@ class JwxtClient:
 
     def is_alive(self) -> bool:
         try:
-            r = self.http.get(
+            r = self._cached_get(
                 f"{JWXT}/jwglxt/xtgl/index_initMenu.html",
                 headers={"Referer": f"{JWXT}/jwglxt/xtgl/login_slogin.html"},
             )
@@ -277,6 +299,7 @@ class JwxtClient:
     # ---------------- Cookie 注入 ----------------
     def set_cookie_header(self, cookie: str) -> None:
         cookie = re.sub(r"^Cookie:\s*", "", cookie.strip(), flags=re.I)
+        self._pages.clear()  # 换了身份，页面缓存必须作废
         count = 0
         for part in cookie.split(";"):
             if "=" not in part:
@@ -294,7 +317,7 @@ class JwxtClient:
 
     # ---------------- 学生信息 ----------------
     def student_info(self) -> dict[str, Any]:
-        html = self.http.get(f"{JWXT}/jwglxt/xtgl/index_initMenu.html").text
+        html = self._cached_get(f"{JWXT}/jwglxt/xtgl/index_initMenu.html").text
         info: dict[str, Any] = {}
         m = re.search(r'id="sessionUserName"[^>]*>([^<]*)<', html)
         if m:

@@ -6,7 +6,7 @@ title GDMEC 课表 - 本地服务
 echo ================================================
 echo   广东机电职业技术学院 · 课表代理
 echo   直接使用系统 Python，不需要虚拟环境
-echo   手机同网段访问：start.bat lan
+echo   手机同网段访问：start.bat lan   （明文 HTTP，仅限可信网络）
 echo ================================================
 echo.
 
@@ -64,8 +64,23 @@ exit /b 1
 set "PORT=%TRY%"
 
 set "HOST=127.0.0.1"
-if /i "%~1"=="lan" set "HOST=0.0.0.0"
+if /i "%~1"=="lan" goto lanmode
+goto portready
 
+:lanmode
+set "HOST=0.0.0.0"
+echo.
+echo ================================================
+echo   [警告] 局域网模式只走明文 HTTP，没有 HTTPS
+echo   网络里任何设备都能看到你提交的学号和统一身份认证密码，
+echo   也能直接打开你本机这张课表。
+echo   只在学校 / 宿舍这类可信网络里用，公共 WiFi 不要开。
+echo ================================================
+echo.
+choice /c YN /n /m "   确认在可信网络中使用？[Y/N] "
+if errorlevel 2 goto lanabort
+
+:portready
 echo.
 echo [启动] 打开 http://127.0.0.1:%PORT%
 if /i "%~1"=="lan" echo [局域网] 监听 0.0.0.0，手机用「本机IP:%PORT%」访问
@@ -82,6 +97,12 @@ echo.
 echo 服务已停止。
 pause
 exit /b 0
+
+:lanabort
+echo.
+echo [已取消] 没有启动服务。要在局域网里访问，请在可信网络里重试。
+pause
+exit /b 1
 
 :nopython
 echo [错误] 没找到可用的 Python，请安装 Python 3.10+ 并勾选 Add Python to PATH。

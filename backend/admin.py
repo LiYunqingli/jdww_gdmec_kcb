@@ -26,7 +26,13 @@ _lock = threading.Lock()
 _tokens: dict[str, dict[str, Any]] = {}
 _fails: dict[str, list[float]] = {}
 
+# 失败计数按 IP 存，IP 来自请求头（只在可信反代后面才采信）。
+# 即便如此也给个上限：来源再多也不能把内存吃光。
+_FAILS_MAX_IPS = 2000
+
 _DEFAULT_PASSWORD = "kcb-admin"
+# 模板里占位的密码同样是"没改过"
+_PLACEHOLDER_PASSWORDS = {_DEFAULT_PASSWORD, "change-me", ""}
 
 
 def _cfg() -> dict[str, Any]:
@@ -42,7 +48,7 @@ def admin_name() -> str:
 
 
 def is_default_password() -> bool:
-    return str(_cfg().get("password") or "") == _DEFAULT_PASSWORD
+    return str(_cfg().get("password") or "") in _PLACEHOLDER_PASSWORDS
 
 
 def _session_seconds() -> int:
@@ -51,8 +57,10 @@ def _session_seconds() -> int:
 
 def _prune_tokens() -> None:
     now = time.time()
-    for token in [t for t, v in _tokens.items() if v["exp"] <= now]:
-        _tokens.pop(token, None)
+    # 拿锁再遍历：别的线程可能正在写入 _tokens，边遍历边变会抛 RuntimeError
+    with _lock:
+        for token in [t for t, v in _tokens.items() if v["exp"] <= now]:
+            _tokens.pop(token, None)
 
 
 def _too_many_fails(ip: str) -> int:
@@ -62,7 +70,10 @@ def _too_many_fails(ip: str) -> int:
     now = time.time()
     with _lock:
         history = [t for t in _fails.get(ip, []) if now - t < window]
-        _fails[ip] = history
+        if history:
+            _fails[ip] = history
+        else:
+            _fails.pop(ip, None)  # 窗口过了就整条丢掉，别留空壳占位
         if len(history) >= limit:
             return int(window - (now - history[0])) + 1
     return 0
@@ -70,6 +81,10 @@ def _too_many_fails(ip: str) -> int:
 
 def _note_fail(ip: str) -> None:
     with _lock:
+        if ip not in _fails and len(_fails) >= _FAILS_MAX_IPS:
+            # 顶掉最久没更新的那条，保证字典有界
+            oldest = min(_fails, key=lambda k: _fails[k][-1] if _fails[k] else 0.0)
+            _fails.pop(oldest, None)
         _fails.setdefault(ip, []).append(time.time())
 
 
@@ -143,6 +158,7 @@ def admin_logout(authorization: str | None = Header(default=None)) -> dict[str, 
 def admin_stats(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _require(authorization)
     data = audit.store().snapshot()
+    _prune_tokens()  # 先把过期的清掉，别把已失效的令牌算进"在线"
     with _lock:
         data["cards"]["admin_online"] = len(_tokens)
     return {"ok": True, **data}

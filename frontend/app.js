@@ -78,8 +78,19 @@ function slotOf(idx) { return state.slots.find((s) => s.idx === idx); }
 function startMonday() {
   if (!store.startDate) return null;
   const d = new Date(store.startDate + "T00:00:00");
-  return isNaN(d.getTime()) ? null : d;
+  if (isNaN(d.getTime())) return null;
+  return mondayOf(d);
 }
+
+/* 取所在周的周一：startDate 必须是周一，否则"今天是第几周"会整体偏一天 */
+function mondayOf(date) {
+  const d = new Date(date);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+const isoDate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
 function dateFor(week, weekday) {
   const start = startMonday();
@@ -249,13 +260,19 @@ async function boot() {
 }
 
 function initStartDate() {
-  if (store.startDate) return;
+  if (store.startDate) {
+    // 老版本可能存了个非周一的日子，一次性归正，免得输入框和网格各说各话
+    const d = new Date(store.startDate + "T00:00:00");
+    store.startDate = isNaN(d.getTime()) ? "" : isoDate(mondayOf(d));
+    if (store.startDate) return;
+  }
   const now = new Date();
   const y = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
   const guess = now.getMonth() >= 8
     ? new Date(y, 8, 1)        // 9 月 1 日
     : new Date(y + 1, 1, 23);  // 次年 2 月下旬
-  store.startDate = `${guess.getFullYear()}-${pad2(guess.getMonth() + 1)}-${pad2(guess.getDate())}`;
+  // 猜的日子不一定是周一，回退到那周的周一，否则每周一都会被算成上一周
+  store.startDate = isoDate(mondayOf(guess));
 }
 
 function setLoader(on) {
@@ -276,13 +293,19 @@ function termText() {
 }
 
 /* ---------------- 拉课表 ---------------- */
+// 每次加载领一个号：快速切两次学年时，慢的那次回来会发现号已经过期，直接丢掉，
+// 不让旧数据盖掉新数据
+let loadSeq = 0;
+
 async function loadTimetable() {
+  const seq = ++loadSeq;
   const xnm = $("sel-xnm").value;
   const xqm = $("sel-xqm").value;
   setAppMsg("");
   setLoader(true);
   try {
     const data = await api(`/api/timetable?xnm=${encodeURIComponent(xnm)}&xqm=${encodeURIComponent(xqm)}`);
+    if (seq !== loadSeq) return;
     state.courses = data.courses || [];
     state.practices = data.practices || [];
     state.slots = data.slots || [];
@@ -312,6 +335,7 @@ async function loadTimetable() {
       setAppMsg("这个学期没查到课程。如果确认有课，换个学年/学期试试。");
     }
   } catch (err) {
+    if (seq !== loadSeq) return;
     setLoader(false);
     if (err.message !== "unauthorized") {
       setAppMsg(err.message);
@@ -767,7 +791,12 @@ $("sel-xnm").addEventListener("change", () => { loadTimetable(); });
 $("sel-xqm").addEventListener("change", () => { loadTimetable(); });
 
 $("start-date").addEventListener("change", (e) => {
-  store.startDate = e.target.value;
+  const picked = e.target.value;
+  const d = picked ? new Date(picked + "T00:00:00") : null;
+  // 选到周中也归到那周的周一，输入框跟着回填，免得以为记的是周三
+  const monday = d && !isNaN(d.getTime()) ? isoDate(mondayOf(d)) : "";
+  store.startDate = monday;
+  e.target.value = monday;
   computeTodayWeek();
   buildWeekStrip();
   render();

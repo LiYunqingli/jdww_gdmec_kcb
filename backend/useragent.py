@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any
 
 _BROWSERS: list[tuple[str, str]] = [
@@ -32,8 +33,13 @@ def _major(version: str) -> str:
     return version.split(".")[0] if version else ""
 
 
+@lru_cache(maxsize=256)
 def parse(ua: str | None) -> dict[str, Any]:
-    """返回 {browser, os, device, mobile: bool}，都是给人看的短标签。"""
+    """返回 {browser, os, device, mobile: bool}，都是给人看的短标签。
+
+    结果缓存：同一批人用的 UA 就那么几种，正则跑一次就够。调用方要复制
+    着用，别改返回的 dict。
+    """
     text = (ua or "").strip()
     if not text:
         return {"browser": "未知", "os": "未知", "device": "未知", "mobile": False}

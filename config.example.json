@@ -4,9 +4,10 @@
     "port": 8000,
     "title": "课表代理",
     "version": "1.0",
-    "cors_origins": ["*"]
+    "cors_origins": [
+      "*"
+    ]
   },
-
   "logging": {
     "level": "DEBUG",
     "format": "%(asctime)s | %(levelname)-7s | %(name)-16s | %(message)s",
@@ -31,36 +32,32 @@
       "asyncio": "WARNING"
     }
   },
-
   "paths": {
     "data_dir": "data",
     "session_file": "sessions.json",
     "frontend_dir": "frontend"
   },
-
   "session": {
-    "single": true
+    "single": true,
+    "idle_timeout_hours": 168
   },
-
   "http": {
     "timeout": 25,
     "max_redirects": 14,
     "max_redirects_login": 16,
+    "trusted_proxies": [],
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
   },
-
   "jwxt": {
     "base": "https://jwxt.gdmec.edu.cn",
     "portal": "https://home.gdmec.edu.cn",
     "sso": "https://auth.gdmec.edu.cn"
   },
-
   "terms": {
     "3": "第一学期",
     "12": "第二学期",
     "16": "第三学期"
   },
-
   "admin": {
     "enabled": true,
     "username": "admin",
@@ -69,23 +66,37 @@
     "max_login_fails": 5,
     "fail_window_minutes": 10
   },
-
+  "cache": {
+    "ttl_seconds": 60
+  },
   "audit": {
     "enabled": true,
     "path": "logs/events.jsonl",
     "max_bytes": 5242880,
     "backup_count": 3,
-    "memory_events": 5000
+    "memory_events": 5000,
+    "flush_interval_ms": 400
   },
-
   "timetable": {
     "period_minutes": 40,
     "break_between_periods": 10,
     "break_between_pairs": 25,
     "blocks": [
-      [1, 4, "08:30"],
-      [5, 8, "14:10"],
-      [9, 12, "19:00"]
+      [
+        1,
+        4,
+        "08:30"
+      ],
+      [
+        5,
+        8,
+        "14:10"
+      ],
+      [
+        9,
+        12,
+        "19:00"
+      ]
     ]
   }
 }

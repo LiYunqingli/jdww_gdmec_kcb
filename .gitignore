@@ -3,6 +3,11 @@ data/
 *.session
 *.cookies
 
+# ---------- 本地配置（含管理后台密码） ----------
+# config.example.json 入库当模板，真正的 config.json 只留在本机
+config.json
+!config.example.json
+
 # ---------- 逆向 / 抓包 / 调试脚本（含真实账号密码与响应样本） ----------
 probe/
 

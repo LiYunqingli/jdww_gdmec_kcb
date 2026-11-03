@@ -42,18 +42,29 @@
 
 所有可调项都在项目根目录的 **`config.json`**，改完重启生效。代码里不再有散落的设置常量。
 
+`config.json` **里存着管理后台密码，已 gitignore、不入库**；仓库里那份是模板 `config.example.json`。
+新环境先复制一份再改：
+
+```bash
+cp config.example.json config.json     # Windows: copy config.example.json config.json
+```
+
+没有 `config.json` 也能启动：会退回读 `config.example.json` 并在启动日志里提示一句。想让配置放在别处，
+用 `KCB_CONFIG=/path/to/conf.json` 指过去。
+
 | 段 | 管什么 |
 | --- | --- |
 | `server` | 标题、版本、默认 host / port、CORS 白名单 |
 | `logging` | 日志级别、格式、控制台与文件两路输出、第三方库降噪 |
 | `paths` | `data/`、会话文件名、前端目录 |
-| `session` | `single`：同一账号是否只保留最新会话（默认 `true`） |
-| `http` | 请求超时、重定向上限、User-Agent |
+| `session` | `single`：同一账号是否只保留最新会话（默认 `true`）；`idle_timeout_hours`：空闲多久算过期，默认 168 小时，填 0 永不过期 |
+| `http` | 请求超时、重定向上限、User-Agent、可信反向代理 |
 | `jwxt` | 教务 / 门户 / 统一认证三个域名 |
 | `terms` | 学期代码 → 中文名（`3` / `12` / `16`） |
 | `timetable` | 作息：单节时长、课间、各大节打铃时间 |
 | `admin` | 管理后台账号密码、会话时长、失败限流 |
-| `audit` | 事件文件路径、轮转大小、内存保留条数 |
+| `cache` | `ttl_seconds`：学年学期 / 课表的缓存秒数，默认 60，填 0 关掉 |
+| `audit` | 事件文件路径、轮转大小、内存保留条数、后台刷盘间隔（`flush_interval_ms`，默认 400） |
 
 日志级别只写一个 `logging.level` 就够：
 
@@ -84,6 +95,10 @@
 
 事件写在 `logs/events.jsonl`（`audit` 段可改路径和容量），只有三种：`request`（每个 `/api` 请求）、`login`（每次登录尝试）、`logout`。管理后台自己的轮询请求不进统计，避免仪表盘把真实流量盖掉。
 
+事件不是同步写盘的：请求线程只把这一行塞进内存队列（约 8 µs），后台线程按 `flush_interval_ms` 攒一批一起写，一次 `open` 写几百行。关服务时（`Ctrl+C` / 关窗口）会把剩下的写完。这样即使在机械盘或同步盘上，接口响应也不会被日志 IO 拖住。
+
+会话文件 `data/sessions.json` 同理——只有 cookie 集合真的变了、或者 `ts` 已经 5 分钟没存过，才打脏标记，后台线程合并写一次。所以正常浏览时这个文件几乎不动。
+
 > 学号是完整写进日志的，这是 `/admin` 能按人统计的前提。`logs/` 已 gitignore，别把日志文件发出去。
 
 > `start.bat` 会自动探测 8000-8010 的空闲端口，所以走它启动时端口以探测结果为准（`server.port` 只是 `python -m backend.app` 的默认值）；host / port 都能用 `KCB_HOST` / `KCB_PORT` 覆盖。
@@ -96,7 +111,7 @@
 :: 双击即可，也可以在命令行执行
 start.bat
 
-:: 手机同网段访问
+:: 手机同网段访问（会先弹一个确认：这条通道是明文 HTTP，见下面「安全边界」）
 start.bat lan
 ```
 
@@ -118,7 +133,8 @@ python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ## 目录结构
 
 ```
-config.json       全部可调参数（服务、日志、域名、作息、后台账号），唯一设置入口
+config.example.json 配置模板（入库），复制成 config.json 再改
+config.json       本机的真实配置，含管理后台密码，已 gitignore
 backend/
   config.py       读 config.json，深合并默认值，配置写坏也不崩
   logging_setup.py 日志初始化：控制台 + 轮转文件，级别来自配置
@@ -159,7 +175,10 @@ start.bat         Windows 一键启动
 }
 ```
 
-**默认密码 `kcb-admin` 一定要改**——还在用默认值时，启动日志会打一条 WARNING 提醒。改完重启生效。
+`/admin.html` 会 302 跳到这里；`enabled` 关掉时两者都返回 404——静态目录不会绕过这个开关。
+
+**默认密码 `kcb-admin`（模板里是 `change-me`）一定要改**——还在用这两个值时，启动日志会打一条 WARNING 提醒。改完重启生效。
+密码明文存在 `config.json` 里，而 `config.json` 现在**不进版本库**，改完不会被顺手提交上去。
 
 看板上有什么：
 
@@ -174,7 +193,10 @@ start.bat         Windows 一键启动
 
 - 管理后台的 token 和学生的登录 token **分开存**，互相不能顶替；token 只放内存，重启即失效
 - 同一 IP 连续失败 `max_login_fails` 次后按 `fail_window_minutes` 内限流（实测第 6 次返回 429）
-- 密码用 `hmac.compare_digest` 比对，避免计时攻击；明文存在 `config.json` 里，这是个人自用项目的取舍——**别把带真实密码的 config 推到公开仓库**
+- 这里的"IP"默认取 **TCP 对端地址**。`X-Forwarded-For` / `X-Real-IP` 是客户端能随便写的头，
+  默认**不信**——否则伪造一个随机头就能绕过上面的限流。前面真的挂了 nginx 之类的反代时，
+  把它的地址填进 `http.trusted_proxies`（支持 `10.0.0.0/8` 这种网段），才会采信转发头
+- 密码用 `hmac.compare_digest` 比对，避免计时攻击；明文存在 `config.json` 里，这是个人自用项目的取舍
 - 看板要读全量事件做聚合，事件量大了（> 5000 条）就只统计内存里保留的那部分，避免一次请求扫几万行
 
 ## 会话策略
@@ -182,10 +204,14 @@ start.bat         Windows 一键启动
 学生端一个学号只保留**最新一个**会话，这是 `config.json` 的 `session.single`（默认开）：
 
 - 新登录成功时，先把这个学号名下的其它 token 从内存和 `data/sessions.json` 里摘掉，旧客户端的连接池一并关闭
+- **会话会因空闲而过期**：`session.idle_timeout_hours`（默认 168 小时）内一次都没访问过就作废，
+  过期时同样会关掉连接池、从内存和磁盘摘掉。每次请求都会刷新"最后活动时间"，所以常用的人不会被踢。
+  填 `0` 恢复成"永不过期"的老行为
 - 旧标签页下次请求会拿到 401 和一句明确的话：「该账号已在另一处登录，此会话已失效」，而不是含糊的"登录已过期"
 - 启动时也会按同样规则清洗历史快照，把超出的一条并成 ts 最新的那条（清理条数写进日志）
 - 被顶下线的 token 记在内存里（上限 200 条），只为给出准确提示，重启即清空
-- Cookie 登录不强制带学号，用的是占位账号 `cookie-user`，同名占位之间**不互相顶**，否则两个用 Cookie 的人会互相踢下线
+- Cookie 登录不强制带学号，用的是占位账号 `cookie-user`，同名占位之间**不互相顶**，否则两个用 Cookie 的人会互相踢下线。
+  请求里带的 `username` 只当日志标签，**不参与身份判定**——否则谁都能填一个别人的学号把对方顶掉
 
 想恢复成"允许多端同时在线"，把 `session.single` 改成 `false` 即可。管理后台是只读看板，多终端同时看着是正常需求，所以没套这条规则。
 
@@ -234,6 +260,20 @@ GET  /jwglxt/ticketlogin?uid=...&verify=...           → 教务会话建立
 4. **Cookie 持久化必须带 domain**。只存 name/value，重启后 httpx 不知道往哪个域发，会话直接失效。
 5. **`start.bat` 必须是 GBK + CRLF**。UTF-8 + LF 会让 cmd 逐字节解析错乱，
    报一堆"不是内部或外部命令"。
+## 安全边界
+
+这个服务是给**一个人在自己电脑上用**的，默认只监听 `127.0.0.1`。有三条线不要越：
+
+1. **`start.bat lan` 是明文 HTTP。** 学号和统一身份认证密码会以明文穿过局域网，同一网段里任何设备
+   抓包就能拿到；拿到你机器上的 token 也能直接看课表。所以脚本在 `lan` 模式下会先打印警告、要你敲
+   `Y` 确认。**只在宿舍 / 家里这类可信网络里开，公共 WiFi、教学楼开放网络不要开。**
+2. **管理后台密码不要留默认值。** `kcb-admin` / `change-me` 都会在启动日志里触发 WARNING。
+3. **`config.json` 和 `data/` 都别提交。** 前者是管理后台密码，后者是带 Cookie 的会话快照
+   （等价于你的教务登录态）。两者都已在 `.gitignore` 里。
+
+要真正对公网开放，得自己在前面套一层 HTTPS 反代，并把反代地址写进 `http.trusted_proxies`，
+否则限流拿到的 IP 全是反代地址。
+
 ## 免责声明
 
 个人自用项目，只读教务系统的公开数据，不写库、不改成绩、不绕过任何权限校验。

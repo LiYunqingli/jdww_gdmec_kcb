@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from collections import Counter, deque
@@ -45,6 +46,14 @@ def _pct(values: list[float], q: float) -> float:
 
 
 class AuditStore:
+    """事件库：请求线程只入队，真正的磁盘 IO 全在后台线程。
+
+    原来每条事件都在请求线程里 open/write/close 一次，实测 1.5 ms/条，
+    单线程上限约 665 条/秒，而且这条同步 IO 卡在事件循环上，磁盘一抖整个
+    服务跟着停。现在 record() 只做 append + 入队（约 15 µs），后台线程按
+    flush_interval 批量写，一次 open 写几百行。
+    """
+
     def __init__(
         self,
         path: Path,
@@ -53,18 +62,28 @@ class AuditStore:
         max_bytes: int = 5 * 1024 * 1024,
         backup_count: int = 3,
         memory_events: int = 5000,
+        flush_interval: float = 0.4,
+        queue_max: int = 20000,
     ):
         self.path = path
         self.enabled = enabled
         self.max_bytes = max_bytes
         self.backup_count = backup_count
+        self.flush_interval = max(0.02, float(flush_interval))
         self._events: deque[dict[str, Any]] = deque(maxlen=memory_events)
         self._lock = threading.Lock()
         self._write_error_logged = False
         self._size = 0
         self._live: Callable[[], dict[str, Any]] | None = None
+        self._queue: queue.Queue[bytes] = queue.Queue(maxsize=queue_max)
+        self._stop = threading.Event()
+        self._wlock = threading.Lock()
+        self._fh: Any = None
+        self._writer: threading.Thread | None = None
+        self._dropped = 0
         if enabled:
             self._load()
+            self._start_writer()
 
     # ---------------- 落盘 ----------------
     def _load(self) -> None:
@@ -113,28 +132,111 @@ class AuditStore:
         except OSError as exc:
             log.warning("事件文件轮转失败：%s", exc)
 
+    # ---------------- 后台写线程 ----------------
+    def _start_writer(self) -> None:
+        with self._wlock:
+            if self._writer and self._writer.is_alive():
+                return
+            self._stop.clear()
+            self._writer = threading.Thread(
+                target=self._writer_loop, name="kcb-audit-writer", daemon=True
+            )
+            self._writer.start()
+
+    def _open_handle(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = self.path.open("ab")
+
+    def _close_handle(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+    def _writer_loop(self) -> None:
+        while True:
+            try:
+                first = self._queue.get(timeout=self.flush_interval)
+            except queue.Empty:
+                if self._stop.is_set():
+                    break
+                continue
+            batch = [first]
+            # 攒一批一起写，但别攒太大：一次写太多会在轮转阈值上冲过头
+            pending = len(first)
+            while len(batch) < 512 and pending < 64 * 1024:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                batch.append(item)
+                pending += len(item)
+            self._write_batch(batch)
+            if self._stop.is_set() and self._queue.empty():
+                break
+        self._close_handle()
+
+    def _write_batch(self, batch: list[bytes]) -> None:
+        payload = b"".join(batch)
+        try:
+            if self._size and self._size + len(payload) > self.max_bytes:
+                self._close_handle()  # Windows 上文件被占着换不了名
+                self._rotate()
+                self._size = 0
+            if self._fh is None:
+                self._open_handle()
+            self._fh.write(payload)
+            self._fh.flush()
+            self._size += len(payload)
+            self._write_error_logged = False
+        except (OSError, ValueError) as exc:
+            self._close_handle()
+            if not self._write_error_logged:
+                self._write_error_logged = True
+                log.error("事件写入失败（后续同类错误不再重复）：%s（%s）", self.path, exc)
+
     def record(self, kind: str, **fields: Any) -> dict[str, Any]:
         """记一条事件。任何失败都只记日志，绝不影响接口本身。"""
         event: dict[str, Any] = {"ts": time.time(), "kind": kind}
         event.update({k: v for k, v in fields.items() if v is not None})
         with self._lock:
             self._events.append(event)
-            if not self.enabled:
-                return event
-            try:
-                if self._size >= self.max_bytes:
-                    self._rotate()
-                    self._size = 0
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
-                with self.path.open("a", encoding="utf-8") as fh:
-                    fh.write(line)
-                self._size += len(line.encode("utf-8"))
-            except OSError as exc:
-                if not self._write_error_logged:
-                    self._write_error_logged = True
-                    log.error("事件写入失败（后续同类错误不再重复）：%s（%s）", self.path, exc)
+        if not self.enabled:
+            return event
+        try:
+            line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        except (TypeError, ValueError) as exc:
+            log.warning("事件里有无法序列化的字段，已跳过：%s", exc)
+            return event
+        try:
+            self._queue.put_nowait(line.encode("utf-8"))
+        except queue.Full:
+            self._dropped += 1
+            if self._dropped == 1 or self._dropped % 500 == 0:
+                log.warning("事件队列已满，累计丢弃 %d 条（磁盘可能卡住了）", self._dropped)
+        if self._writer is None or not self._writer.is_alive():
+            self._start_writer()  # 写线程意外退出后自愈
         return event
+
+    def flush(self, timeout: float = 3.0) -> None:
+        """等队列写完（测试与关服务时用）。"""
+        deadline = time.time() + timeout
+        while not self._queue.empty() and time.time() < deadline:
+            time.sleep(0.01)
+        if self._fh is not None:
+            try:
+                self._fh.flush()
+            except (OSError, ValueError):
+                pass
+
+    def close(self) -> None:
+        """停写线程并把剩下的写完。可重复调用。"""
+        if self._writer and self._writer.is_alive():
+            self._stop.set()
+            self._writer.join(timeout=5)
+        self._close_handle()
 
     # ---------------- 实时信息注入 ----------------
     def bind_live(self, provider: Callable[[], dict[str, Any]]) -> None:
@@ -167,19 +269,35 @@ def build_stats(
 ) -> dict[str, Any]:
     live = live or {}
     now = time.time()
-    today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    today = _day_of(now)
 
-    requests = [e for e in events if e.get("kind") == "request"]
-    logins = [e for e in events if e.get("kind") == "login"]
-    admin_logins = [e for e in events if e.get("kind") == "admin_login"]
+    # 一次遍历把「哪天 / 几点 / 状态码 / 耗时」全算好。
+    # 原来每条事件被 7 个聚合各调一次 fromtimestamp，5000 条 = 3.5 万次转换；
+    # 现在只做一次，行结构是 (事件, 日期, 小时, 状态码, 耗时ms, 类型)。
+    rows: list[tuple[dict[str, Any], str, int, int, float, str]] = []
+    for e in events:
+        ts = _f(e.get("ts"))
+        tm = time.localtime(ts) if ts > 0 else None
+        day = f"{tm.tm_year:04d}-{tm.tm_mon:02d}-{tm.tm_mday:02d}" if tm else "-"
+        hour = tm.tm_hour if tm else 0
+        rows.append((
+            e, day, hour,
+            int(e.get("status") or 0),
+            _f(e.get("ms")),
+            str(e.get("kind") or ""),
+        ))
 
-    req_today = [e for e in requests if _day(e) == today]
-    ok_logins = [e for e in logins if e.get("ok")]
-    ok_today = [e for e in ok_logins if _day(e) == today]
-    fail_today = [e for e in logins if not e.get("ok") and _day(e) == today]
+    requests = [r for r in rows if r[5] == "request"]
+    logins = [r for r in rows if r[5] == "login"]
+    admin_logins = [r for r in rows if r[5] == "admin_login"]
 
-    durations = [float(e.get("ms") or 0) for e in requests]
-    err_today = [e for e in req_today if int(e.get("status") or 0) >= 400]
+    req_today = [r for r in requests if r[1] == today]
+    ok_logins = [r for r in logins if r[0].get("ok")]
+    ok_today = [r for r in ok_logins if r[1] == today]
+    fail_today = [r for r in logins if not r[0].get("ok") and r[1] == today]
+
+    durations = [r[4] for r in requests]
+    err_today = [r for r in req_today if r[3] >= 400]
     total_attempts_today = len(ok_today) + len(fail_today)
 
     # 近 7 天走势
@@ -190,23 +308,25 @@ def build_stats(
         days.append(d.strftime("%Y-%m-%d"))
         day_labels.append(f"{d.month}/{d.day} {_WEEKDAYS[d.weekday()]}")
 
-    day_req = Counter(_day(e) for e in requests)
-    day_err = Counter(_day(e) for e in requests if int(e.get("status") or 0) >= 400)
-    day_login = Counter(_day(e) for e in ok_logins)
-    day_fail = Counter(_day(e) for e in logins if not e.get("ok"))
+    day_req = Counter(r[1] for r in requests)
+    day_err = Counter(r[1] for r in requests if r[3] >= 400)
+    day_login = Counter(r[1] for r in ok_logins)
+    day_fail = Counter(r[1] for r in logins if not r[0].get("ok"))
 
     # 今日 24 小时
-    hour_req = Counter(_hour(e) for e in req_today)
-    hour_login = Counter(_hour(e) for e in ok_today)
+    hour_req = Counter(r[2] for r in req_today)
+    hour_login = Counter(r[2] for r in ok_today)
 
     # 接口维度
     per_endpoint: dict[str, dict[str, Any]] = {}
-    for e in requests:
+    for e, _day, _hour, status, ms, _kind in requests:
         key = f"{str(e.get('method') or 'GET')} {e.get('path') or '-'}"
-        slot = per_endpoint.setdefault(key, {"path": key, "count": 0, "ms": [], "errors": 0})
+        slot = per_endpoint.get(key)
+        if slot is None:
+            slot = per_endpoint[key] = {"path": key, "count": 0, "ms": [], "errors": 0}
         slot["count"] += 1
-        slot["ms"].append(float(e.get("ms") or 0))
-        if int(e.get("status") or 0) >= 400:
+        slot["ms"].append(ms)
+        if status >= 400:
             slot["errors"] += 1
     endpoints = [
         {
@@ -223,15 +343,17 @@ def build_stats(
 
     # 用户维度（以登录事件为准，含失败次数）
     users: dict[str, dict[str, Any]] = {}
-    for e in logins:
+    for e, _day, _hour, _status, _ms, _kind in logins:
         name = str(e.get("username") or "-")
-        slot = users.setdefault(name, {
-            "username": name, "logins": 0, "fails": 0, "last_login": 0,
-            "last_ip": "-", "device": "-", "browser": "-", "os": "-",
-        })
+        slot = users.get(name)
+        if slot is None:
+            slot = users[name] = {
+                "username": name, "logins": 0, "fails": 0, "last_login": 0,
+                "last_ip": "-", "device": "-", "browser": "-", "os": "-",
+            }
         if e.get("ok"):
             slot["logins"] += 1
-            slot["last_login"] = max(slot["last_login"], float(e.get("ts") or 0))
+            slot["last_login"] = max(slot["last_login"], _f(e.get("ts")))
             slot["last_ip"] = e.get("ip") or slot["last_ip"]
             for key in ("device", "browser", "os"):
                 if e.get(key):
@@ -243,22 +365,24 @@ def build_stats(
         row["last_login_text"] = _fmt_ts(row["last_login"])
 
     # 设备 / 浏览器 / 系统分布：优先用登录事件（一个人一次），没有就看全部
-    device_source = logins or events
+    device_source = [r[0] for r in logins] or [r[0] for r in rows]
     devices = Counter(str(e.get("device") or "未知") for e in device_source)
     browsers = Counter(str(e.get("browser") or "未知") for e in device_source)
     systems = Counter(str(e.get("os") or "未知") for e in device_source)
 
-    status_codes = Counter(str(e.get("status") or "-") for e in requests)
+    status_codes = Counter(str(r[3]) if r[3] else "-" for r in requests)
 
     recent_logins = []
-    for e in sorted(logins, key=lambda x: float(x.get("ts") or 0), reverse=True)[:60]:
+    for e, _day, _hour, _status, ms, _kind in sorted(
+        logins, key=lambda r: _f(r[0].get("ts")), reverse=True
+    )[:60]:
         recent_logins.append({
-            "ts": float(e.get("ts") or 0),
-            "time": _fmt_ts(float(e.get("ts") or 0)),
+            "ts": _f(e.get("ts")),
+            "time": _fmt_ts(_f(e.get("ts"))),
             "username": e.get("username") or "-",
             "ok": bool(e.get("ok")),
             "mode": e.get("mode") or "sso",
-            "ms": round(float(e.get("ms") or 0)),
+            "ms": round(ms),
             "ip": e.get("ip") or "-",
             "device": e.get("device") or "-",
             "browser": e.get("browser") or "-",
@@ -267,25 +391,29 @@ def build_stats(
         })
 
     recent_requests = []
-    for e in sorted(requests, key=lambda x: float(x.get("ts") or 0), reverse=True)[:80]:
+    for e, _day, _hour, status, ms, _kind in sorted(
+        requests, key=lambda r: _f(r[0].get("ts")), reverse=True
+    )[:80]:
         recent_requests.append({
-            "ts": float(e.get("ts") or 0),
-            "time": _fmt_ts(float(e.get("ts") or 0)),
+            "ts": _f(e.get("ts")),
+            "time": _fmt_ts(_f(e.get("ts"))),
             "username": e.get("username") or "-",
             "method": e.get("method") or "GET",
             "path": e.get("path") or "-",
-            "status": int(e.get("status") or 0),
-            "ms": round(float(e.get("ms") or 0)),
+            "status": status,
+            "ms": round(ms),
         })
 
     slowest = [
         {
-            "time": _fmt_ts(float(e.get("ts") or 0)),
+            "time": _fmt_ts(_f(e.get("ts"))),
             "path": f"{e.get('method') or 'GET'} {e.get('path') or '-'}",
-            "status": int(e.get("status") or 0),
-            "ms": round(float(e.get("ms") or 0)),
+            "status": status,
+            "ms": round(ms),
         }
-        for e in sorted(requests, key=lambda x: float(x.get("ms") or 0), reverse=True)[:10]
+        for e, _day, _hour, status, ms, _kind in sorted(
+            requests, key=lambda r: r[4], reverse=True
+        )[:10]
     ]
 
     peak_hour, peak_count = ("-", 0)
@@ -311,7 +439,7 @@ def build_stats(
         "cards": {
             "sessions": int(live.get("sessions") or 0),
             "users_total": len([u for u in user_rows if u["logins"]]),
-            "users_today": len({str(e.get("username") or "-") for e in ok_today}),
+            "users_today": len({str(e.get("username") or "-") for e in (r[0] for r in ok_today)}),
             "logins_today": len(ok_today),
             "fails_today": len(fail_today),
             "success_rate": round(100 * len(ok_today) / total_attempts_today, 1) if total_attempts_today else 0.0,
@@ -349,12 +477,17 @@ def build_stats(
     }
 
 
-def _day(event: dict[str, Any]) -> str:
-    return datetime.fromtimestamp(float(event.get("ts") or 0)).strftime("%Y-%m-%d")
+def _f(value: Any) -> float:
+    """把任意值收敛成 float，坏数据当 0 —— 聚合不能因为一条脏事件整个失败。"""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def _hour(event: dict[str, Any]) -> int:
-    return datetime.fromtimestamp(float(event.get("ts") or 0)).hour
+def _day_of(ts: float) -> str:
+    tm = time.localtime(ts)
+    return f"{tm.tm_year:04d}-{tm.tm_mon:02d}-{tm.tm_mday:02d}"
 
 
 # ---------------- 单例 ----------------
@@ -374,6 +507,7 @@ def store() -> AuditStore:
             max_bytes=int(cfg.get("max_bytes") or 5 * 1024 * 1024),
             backup_count=int(cfg.get("backup_count") or 3),
             memory_events=int(cfg.get("memory_events") or 5000),
+            flush_interval=float(cfg.get("flush_interval_ms") or 400) / 1000,
         )
     return _store
 
@@ -381,5 +515,7 @@ def store() -> AuditStore:
 def reset_store() -> None:
     """测试用：丢掉单例，下次调用重新构建。"""
     global _store
+    if _store is not None:
+        _store.close()
     _store = None
 

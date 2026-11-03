@@ -15,6 +15,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_FILE = "config.json"
+# 入库的模板：config.json 本身含管理后台密码，已 gitignore（加了新配置项记得同步这里）
+EXAMPLE_CONFIG_FILE = "config.example.json"
 
 
 DEFAULTS: dict[str, Any] = {
@@ -54,11 +56,16 @@ DEFAULTS: dict[str, Any] = {
     "session": {
         # 同一账号只保留最新一个会话：再次登录会把旧令牌顶下线
         "single": True,
+        # 空闲多久算过期（小时）：多久没用就要求重新登录。填 0 = 永不过期
+        "idle_timeout_hours": 168,
     },
     "http": {
         "timeout": 25,
         "max_redirects": 14,
         "max_redirects_login": 16,
+        # 只有请求来自这些 IP/网段时，才采信 X-Forwarded-For / X-Real-IP。
+        # 留空（默认）= 谁都不信，直接用 TCP 对端地址；前面挂了 nginx 再填它的地址。
+        "trusted_proxies": [],
         "user_agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -78,12 +85,19 @@ DEFAULTS: dict[str, Any] = {
         "max_login_fails": 5,
         "fail_window_minutes": 10,
     },
+    "cache": {
+        # 教务数据缓存秒数：学年学期 / 课表在这个时间内重复请求直接走内存。
+        # 填 0 = 关闭缓存
+        "ttl_seconds": 60,
+    },
     "audit": {
         "enabled": True,
         "path": "logs/events.jsonl",
         "max_bytes": 5242880,
         "backup_count": 3,
         "memory_events": 5000,
+        # 后台写线程攒够多久就落盘一次（毫秒）。写入不在请求线程里做
+        "flush_interval_ms": 400,
     },
     "timetable": {
         "period_minutes": 40,
@@ -148,8 +162,23 @@ def _config_path() -> Path:
     return ROOT / DEFAULT_CONFIG_FILE
 
 
+def _pick_path() -> Path:
+    """config.json 不存在时退回模板，让刚 clone 的仓库也能跑起来。"""
+    path = _config_path()
+    if path.exists():
+        return path
+    example = path.with_name(EXAMPLE_CONFIG_FILE)
+    if example.exists():
+        LOAD_NOTES.append(
+            f"未找到 {path.name}，本次使用 {example.name}："
+            f"建议复制一份改名 {path.name}，并改掉 admin.password"
+        )
+        return example
+    return path
+
+
 def load(path: Path | None = None) -> dict[str, Any]:
-    path = path or _config_path()
+    path = path or _pick_path()
     if not path.exists():
         LOAD_NOTES.append(f"未找到配置文件 {path}，全部使用内置默认值")
         return _merge({}, DEFAULTS)
@@ -167,8 +196,8 @@ def load(path: Path | None = None) -> dict[str, Any]:
     return _merge(DEFAULTS, raw)
 
 
-CONFIG: dict[str, Any] = load()
-CONFIG_PATH: Path = _config_path()
+CONFIG_PATH: Path = _pick_path()
+CONFIG: dict[str, Any] = load(CONFIG_PATH)
 
 
 def get(dotted: str, default: Any = None) -> Any:
@@ -189,7 +218,8 @@ def resolve(rel: str | Path) -> Path:
 
 def reload() -> dict[str, Any]:
     """重新读盘，仅测试 / 运维脚本用。"""
-    global CONFIG
+    global CONFIG, CONFIG_PATH
     LOAD_NOTES.clear()
-    CONFIG = load()
+    CONFIG_PATH = _pick_path()
+    CONFIG = load(CONFIG_PATH)
     return CONFIG
