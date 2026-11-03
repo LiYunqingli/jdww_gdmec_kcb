@@ -4,9 +4,7 @@
     "port": 8000,
     "title": "课表代理",
     "version": "1.0",
-    "cors_origins": [
-      "*"
-    ]
+    "cors_origins": []
   },
   "logging": {
     "level": "DEBUG",
@@ -39,7 +37,12 @@
   },
   "session": {
     "single": true,
-    "idle_timeout_hours": 168
+    "idle_timeout_hours": 168,
+    "max_sessions": 512
+  },
+  "login": {
+    "max_fails": 8,
+    "fail_window_minutes": 10
   },
   "http": {
     "timeout": 25,

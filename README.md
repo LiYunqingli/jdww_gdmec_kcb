@@ -54,10 +54,11 @@ cp config.example.json config.json     # Windows: copy config.example.json confi
 
 | 段 | 管什么 |
 | --- | --- |
-| `server` | 标题、版本、默认 host / port、CORS 白名单 |
+| `server` | 标题、版本、默认 host / port、CORS 白名单（默认空 = 不开放，同源部署不需要；**别填 `["*"]`**） |
 | `logging` | 日志级别、格式、控制台与文件两路输出、第三方库降噪 |
 | `paths` | `data/`、会话文件名、前端目录 |
-| `session` | `single`：同一账号是否只保留最新会话（默认 `true`）；`idle_timeout_hours`：空闲多久算过期，默认 168 小时，填 0 永不过期 |
+| `session` | `single`：同一账号是否只保留最新会话（默认 `true`）；`idle_timeout_hours`：空闲多久算过期，默认 168 小时，填 0 永不过期；`max_sessions`：会话总数上限，默认 512，超了淘汰最久没活动的 |
+| `login` | 学生端登录限流：`max_fails`（默认 8 次）/ `fail_window_minutes`（默认 10 分钟），按 IP 计 |
 | `http` | 请求超时、重定向上限、User-Agent、可信反向代理 |
 | `jwxt` | 教务 / 门户 / 统一认证三个域名 |
 | `terms` | 学期代码 → 中文名（`3` / `12` / `16`） |
@@ -94,6 +95,11 @@ cp config.example.json config.json     # Windows: copy config.example.json confi
 | `events.jsonl` | 给程序看：一行一个 JSON 事件，`/admin` 看板的数据源，按 5 MB 轮转、留 3 份 |
 
 事件写在 `logs/events.jsonl`（`audit` 段可改路径和容量），只有三种：`request`（每个 `/api` 请求）、`login`（每次登录尝试）、`logout`。管理后台自己的轮询请求不进统计，避免仪表盘把真实流量盖掉。
+
+**日志同样是后台线程写盘**：`logging_setup.py` 在 root 上挂的是 `QueueHandler`，
+真正的控制台 / 文件 handler 跑在 `QueueListener` 线程里。DEBUG 级别下一个请求会产生好几条记录，
+同步写会把这几次磁盘 IO 全压在请求线程上；现在请求线程只做一次入队。队列满（默认 2 万条）
+时丢日志而不是吃内存，退出时 `atexit` 会把剩下的写完。
 
 事件不是同步写盘的：请求线程只把这一行塞进内存队列（约 8 µs），后台线程按 `flush_interval_ms` 攒一批一起写，一次 `open` 写几百行。关服务时（`Ctrl+C` / 关窗口）会把剩下的写完。这样即使在机械盘或同步盘上，接口响应也不会被日志 IO 拖住。
 
@@ -270,6 +276,10 @@ GET  /jwglxt/ticketlogin?uid=...&verify=...           → 教务会话建立
 2. **管理后台密码不要留默认值。** `kcb-admin` / `change-me` 都会在启动日志里触发 WARNING。
 3. **`config.json` 和 `data/` 都别提交。** 前者是管理后台密码，后者是带 Cookie 的会话快照
    （等价于你的教务登录态）。两者都已在 `.gitignore` 里。
+4. **不要把 `server.cors_origins` 写成 `["*"]`。** 那等于让用户浏览器里**任何**网页都能调这个
+   代理——配合 `/api/login` 就能拿你的机器去撞学校 SSO。默认是空的：前后端同源，不需要跨域。
+5. **`/api/login` 有按 IP 的失败限流**（`login.max_fails` / `fail_window_minutes`，默认 8 次 / 10 分钟），
+   超过就返回 429。它和管理后台那套（`admin.max_login_fails`）是分开计数的。
 
 要真正对公网开放，得自己在前面套一层 HTTPS 反代，并把反代地址写进 `http.trusted_proxies`，
 否则限流拿到的 IP 全是反代地址。

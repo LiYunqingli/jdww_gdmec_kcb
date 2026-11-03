@@ -93,6 +93,10 @@ async def lifespan(_: FastAPI):
         "服务已启动：%s v%s · 数据目录 %s · 会话 %d 个",
         app.title, app.version, DATA_DIR, len(_sessions),
     )
+    if _CORS_ORIGINS:
+        log.info("跨域已开放给：%s", ", ".join(_CORS_ORIGINS))
+    else:
+        log.debug("跨域未开放（同源部署不需要）；要跨域请在 server.cors_origins 里列出来源")
     if admin_api.enabled():
         log.info("管理后台已就绪：/admin（账号 %s）", admin_api.admin_name())
         if admin_api.is_default_password():
@@ -109,12 +113,18 @@ app = FastAPI(
     version=str(config.get("server.version", "1.0")),
     lifespan=lifespan,
 )
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=list(config.get("server.cors_origins") or ["*"]),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# 跨域默认关掉：前端和接口同源，本来就不需要 CORS。
+# 原来默认 ["*"]，等于让**任何网页**都能在用户的浏览器里直接调这个代理——
+# 结合 /api/login 去打学校 SSO 就是现成的跳板。要跨域就把来源明确列出来。
+_CORS_ORIGINS = [str(o).strip() for o in (config.get("server.cors_origins") or []) if str(o).strip()]
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 _lock = threading.Lock()
 _sessions: dict[str, dict[str, Any]] = {}
@@ -123,8 +133,22 @@ _clients: dict[str, JwxtClient] = {}
 _evicted: dict[str, float] = {}
 _EVICTED_KEEP = 200
 
+# 会话数上限：Cookie 通道用占位账号、彼此不顶（见 COOKIE_PLACEHOLDER），
+# 不封顶的话同一个人反复登录就能一直堆 client 和连接池（每个 client 默认还留 20 条 keepalive）。
+# 超了按最后活动时间淘汰最旧的。
+_SESSIONS_MAX_DEFAULT = 512
+_SWEEP_INTERVAL = 60          # 多久扫一次空闲超时的会话
+_last_sweep = 0.0
+
 # Cookie 登录不强制带学号，这是它的占位账号；占位名之间不能互相顶，否则两个人都登不上
 COOKIE_PLACEHOLDER = "cookie-user"
+
+
+def _sessions_max() -> int:
+    try:
+        return max(10, int(config.get("session.max_sessions") or _SESSIONS_MAX_DEFAULT))
+    except (TypeError, ValueError):
+        return _SESSIONS_MAX_DEFAULT
 
 
 def single_session() -> bool:
@@ -201,6 +225,94 @@ def _close_clients(clients: list[JwxtClient]) -> None:
             client.close()
         except Exception:  # noqa: BLE001
             log.debug("关闭旧会话的教务客户端失败", exc_info=True)
+
+
+def _cap_sessions_locked() -> list[JwxtClient]:
+    """会话数超过上限时，按最后活动时间淘汰最旧的，返回待关闭的客户端。
+
+    只在持锁时调用。这里不写进 `_evicted`：那是"被同账号新登录顶掉"的语义，
+    容量淘汰对用户来说只是"登录失效"，别让他以为被盗号了。
+    """
+    over = len(_sessions) - _sessions_max()
+    if over <= 0:
+        return []
+    victims = sorted(_sessions.items(), key=lambda kv: float(kv[1].get("ts") or 0))[:over]
+    dropped: list[JwxtClient] = []
+    for token, _ in victims:
+        _sessions.pop(token, None)
+        client = _clients.pop(token, None)
+        if client:
+            dropped.append(client)
+    _save_sessions()
+    log.warning("会话数超过上限 %d，已淘汰最久未活动的 %d 个", _sessions_max(), len(victims))
+    return dropped
+
+
+def _sweep_sessions() -> None:
+    """周期清理空闲超时的会话。
+
+    原来只在有人登录时才 prune：一直没人回来登录，过期会话（连同它的连接池）
+    就会一直躺着，直到下次登录。现在由后台线程每 _SWEEP_INTERVAL 秒扫一次。
+    """
+    global _last_sweep
+    if not _session_ttl_seconds():
+        return  # 配置成永不过期，扫了也白扫
+    now = time.time()
+    if now - _last_sweep < _SWEEP_INTERVAL:
+        return
+    _last_sweep = now
+    with _lock:
+        dropped = _prune_sessions_locked()
+    _close_clients(dropped)
+
+
+# ---------------- 登录限流 ----------------
+# 管理后台有失败计数，学生登录口原来一个都没有：谁都能拿这个代理去撞学校 SSO，
+# 每次失败还会往审计里写一条。这里按 IP 做同样的窗口计数。
+# 只用在账号密码登录上——Cookie 通道没法爆破（必须给有效 Cookie），
+# 把它也算进来反而会让人因为输错密码连 Cookie 都登不了。
+_LOGIN_FAILS_MAX_IPS = 2000
+_login_fails: dict[str, list[float]] = {}
+_rl_lock = threading.Lock()
+
+
+def _login_limit() -> tuple[int, int]:
+    """(窗口内允许的失败次数, 窗口秒数)。配置写坏了回落到 8 次 / 10 分钟。"""
+    try:
+        limit = int(config.get("login.max_fails") or 8)
+        window = int(config.get("login.fail_window_minutes") or 10) * 60
+    except (TypeError, ValueError):
+        return 8, 600
+    return max(1, limit), max(60, window)
+
+
+def _login_blocked_for(ip: str) -> int:
+    """还要等多少秒才能再试，0 表示放行。"""
+    limit, window = _login_limit()
+    now = time.time()
+    with _rl_lock:
+        history = [t for t in _login_fails.get(ip, []) if now - t < window]
+        if history:
+            _login_fails[ip] = history
+        else:
+            _login_fails.pop(ip, None)  # 窗口过了就整条丢掉，别留空壳占位
+        if len(history) >= limit:
+            return int(window - (now - history[0])) + 1
+    return 0
+
+
+def _note_login_fail(ip: str) -> None:
+    with _rl_lock:
+        if ip not in _login_fails and len(_login_fails) >= _LOGIN_FAILS_MAX_IPS:
+            # 顶掉最久没更新的那条，保证字典有界
+            oldest = min(_login_fails, key=lambda k: _login_fails[k][-1] if _login_fails[k] else 0.0)
+            _login_fails.pop(oldest, None)
+        _login_fails.setdefault(ip, []).append(time.time())
+
+
+def _clear_login_fails(ip: str) -> None:
+    with _rl_lock:
+        _login_fails.pop(ip, None)
 
 
 AUDIT.bind_live(_live_state)
@@ -283,6 +395,12 @@ def _flush_sessions() -> None:
         with _persist_lock:
             tmp.write_text(payload, "utf-8")
             os.replace(tmp, SESSION_FILE)
+            try:
+                # 里面是明文的 SSO cookie / TGT，尽量只给当前用户读。
+                # Windows 上 chmod 基本是空操作，不影响。
+                os.chmod(SESSION_FILE, 0o600)
+            except OSError:
+                pass
         log.debug("会话已落盘：%d 条 → %s", len(snapshot), SESSION_FILE)
     except OSError as exc:
         log.error("会话落盘失败：%s（%s）", SESSION_FILE, exc)
@@ -290,7 +408,9 @@ def _flush_sessions() -> None:
 
 def _persist_loop() -> None:
     while not _persist_stop.is_set():
-        if not _persist_dirty.wait(1.0):
+        dirty = _persist_dirty.wait(1.0)
+        _sweep_sessions()  # 顺手每 60 秒清一次空闲超时的会话
+        if not dirty:
             continue
         _persist_stop.wait(_PERSIST_DELAY)  # 攒一下，期间的改动一起写
         _persist_dirty.clear()
@@ -435,7 +555,11 @@ def _cache_put(key: tuple[Any, ...], value: Any) -> None:
             for k in [k for k, (exp, _v) in _cache.items() if exp <= now]:
                 _cache.pop(k, None)
             if len(_cache) >= _CACHE_MAX:
-                _cache.clear()
+                # 原来这里直接 clear()：一满就全清，所有会话同时失效、
+                # 同时回打教务，等于自己造了一波尖峰。改成淘汰最快到期的那一批。
+                victims = sorted(_cache, key=lambda k: _cache[k][0])[: max(1, _CACHE_MAX // 4)]
+                for k in victims:
+                    _cache.pop(k, None)
         _cache[key] = (now + ttl, value)
 
 
@@ -444,6 +568,34 @@ def _cache_drop_token(token: str) -> None:
     with _cache_lock:
         for k in [k for k in _cache if len(k) > 1 and k[1] == token]:
             _cache.pop(k, None)
+
+
+# ---------------- 并发去重（single-flight） ----------------
+# 同一个 key 的并发首访只放一个人真去打教务，其余人等它的结果。
+# 缓存只有 60 秒，刷两次页面 / 连点两下学年下拉就会对同一份数据发两三个请求，
+# 教务那边一次要几百毫秒到几秒，纯属白打。
+# 键里带 token，所以这不会挡住别人（不同账号互不影响）。
+_FLIGHT_WAIT_MAX = 30.0
+_inflight: dict[tuple[Any, ...], threading.Event] = {}
+_inflight_lock = threading.Lock()
+
+
+def _claim_flight(key: tuple[Any, ...]) -> tuple[bool, threading.Event]:
+    """抢占计算权。返回 (我是不是那个唯一的人, 事件)。"""
+    with _inflight_lock:
+        ev = _inflight.get(key)
+        if ev is not None:
+            return False, ev
+        ev = threading.Event()
+        _inflight[key] = ev
+        return True, ev
+
+
+def _release_flight(key: tuple[Any, ...], ev: threading.Event) -> None:
+    with _inflight_lock:
+        if _inflight.get(key) is ev:
+            _inflight.pop(key, None)
+    ev.set()  # 唤醒等待者（它们醒来会重新查缓存）
 
 
 # ---------------- 请求日志 ----------------
@@ -466,8 +618,9 @@ async def log_requests(request: Request, call_next):
     if path.startswith("/api"):
         level = logging.WARNING if response.status_code >= 500 else logging.INFO
         log.log(level, "%s %s → %s（%.0f ms）", request.method, path, response.status_code, cost_ms)
-        # 管理后台的轮询不进统计，否则仪表盘自己的请求会盖住真实流量
-        if not path.startswith("/api/admin"):
+        # 管理后台的轮询不进统计，否则仪表盘自己的请求会盖住真实流量；
+        # /api/health 同理，探活不是业务请求，记进去只会稀释错误率
+        if not path.startswith("/api/admin") and path != "/api/health":
             meta = client_meta(request)
             AUDIT.record(
                 "request", method=request.method, path=path,
@@ -502,6 +655,13 @@ def login(request: Request, payload: dict[str, Any] = Body(...)) -> JSONResponse
         raise HTTPException(400, "账号和密码不能为空")
 
     meta = client_meta(request)
+    wait = _login_blocked_for(meta["ip"])
+    if wait:
+        log.warning("登录被限流：user=%s ip=%s 需等待 %d 秒", username, meta["ip"], wait)
+        AUDIT.record("login", username=username, ok=False, mode=mode,
+                     reason="限流", **meta)
+        raise HTTPException(429, f"尝试过于频繁，请 {wait} 秒后再试")
+
     log.info("登录请求：user=%s mode=%s ip=%s device=%s", username, mode, meta["ip"], meta["device"])
     started = time.perf_counter()
 
@@ -513,6 +673,7 @@ def login(request: Request, payload: dict[str, Any] = Body(...)) -> JSONResponse
             client.login_sso(username, password)
     except JwxtError as exc:
         client.close()
+        _note_login_fail(meta["ip"])
         cost = time.perf_counter() - started
         log.warning("登录失败：user=%s mode=%s（%.1fs）%s", username, mode, cost, exc)
         AUDIT.record("login", username=username, ok=False, mode=mode,
@@ -553,6 +714,7 @@ def login(request: Request, payload: dict[str, Any] = Body(...)) -> JSONResponse
 
     cost = time.perf_counter() - started
     token = uuid.uuid4().hex
+    _clear_login_fails(meta["ip"])
     with _lock:
         expired = _prune_sessions_locked()
         evicted = _evict_others(username)
@@ -563,8 +725,9 @@ def login(request: Request, payload: dict[str, Any] = Body(...)) -> JSONResponse
             "login_at": int(time.time()),
         }
         _clients[token] = client
+        capped = _cap_sessions_locked()
         _save_sessions()
-    _close_clients(expired + evicted)
+    _close_clients(expired + evicted + capped)
     if evicted:
         log.info("账号 %s 重新登录，已顶掉 %d 个旧会话", username, len(evicted))
         AUDIT.record("session_evicted", username=username, count=len(evicted),
@@ -607,6 +770,19 @@ def login_cookie(request: Request, payload: dict[str, Any] = Body(...)) -> JSONR
                      ms=round(cost * 1000), reason=f"网络错误 {type(exc).__name__}",
                      label=label or None, **meta)
         return JSONResponse(status_code=502, content={"ok": False, "message": f"网络请求失败：{exc}"})
+    except Exception as exc:  # noqa: BLE001
+        # 和账号密码登录一样兜底：Cookie 串畸形之类导致的非预期异常，
+        # 也要先把客户端的连接池关掉，别让它变成一个没人认领的 socket。
+        client.close()
+        cost = time.perf_counter() - started
+        log.exception("Cookie 登录出现未预期的错误：label=%s", label or "-")
+        AUDIT.record("login", username=username, ok=False, mode="cookie",
+                     ms=round(cost * 1000), reason=f"内部错误 {type(exc).__name__}",
+                     label=label or None, **meta)
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "message": "登录过程出现内部错误，服务端日志里有完整堆栈"},
+        )
 
     cost = time.perf_counter() - started
     token = uuid.uuid4().hex
@@ -622,8 +798,9 @@ def login_cookie(request: Request, payload: dict[str, Any] = Body(...)) -> JSONR
             "login_at": int(time.time()),
         }
         _clients[token] = client
+        capped = _cap_sessions_locked()
         _save_sessions()
-    _close_clients(expired)
+    _close_clients(expired + capped)
     log.info("Cookie 登录成功：label=%s token=%s…", label or "-", token[:8])
     AUDIT.record("login", username=username, ok=True, mode="cookie",
                  ms=round(cost * 1000), label=label or None, **meta)
@@ -648,20 +825,35 @@ def me(authorization: str | None = Header(default=None)) -> dict[str, Any]:
 def terms(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     token = _bearer(authorization)
     client = _get_client(token)
-    cached = _cache_get(("terms", token))
+    key = ("terms", token)
+    cached = _cache_get(key)
     if cached is not None:
         _refresh_cookies(token, client)
         log.debug("学年学期命中缓存：token=%s…", token[:8])
         return {"ok": True, **cached}
+
+    owner, ev = _claim_flight(key)
+    if not owner and ev.wait(_FLIGHT_WAIT_MAX):
+        # 有人正在拉：等它的结果，省一次教务往返。
+        # 等不到（对方失败 / 超时）就自己打一次，退化成原来的行为。
+        cached = _cache_get(key)
+        if cached is not None:
+            _refresh_cookies(token, client)
+            log.debug("学年学期沿用并发请求的结果：token=%s…", token[:8])
+            return {"ok": True, **cached}
     try:
-        data = client.terms()
-    except JwxtError as exc:
-        log.warning("读取学年学期失败：token=%s… %s", token[:8], exc)
-        raise HTTPException(401, str(exc)) from exc
-    except httpx.HTTPError as exc:
-        log.error("读取学年学期时网络失败：token=%s… %s: %s", token[:8], type(exc).__name__, exc)
-        raise HTTPException(502, f"教务接口网络错误：{type(exc).__name__}") from exc
-    _cache_put(("terms", token), data)
+        try:
+            data = client.terms()
+        except JwxtError as exc:
+            log.warning("读取学年学期失败：token=%s… %s", token[:8], exc)
+            raise HTTPException(401, str(exc)) from exc
+        except httpx.HTTPError as exc:
+            log.error("读取学年学期时网络失败：token=%s… %s: %s", token[:8], type(exc).__name__, exc)
+            raise HTTPException(502, f"教务接口网络错误：{type(exc).__name__}") from exc
+        _cache_put(key, data)
+    finally:
+        if owner:
+            _release_flight(key, ev)
     _refresh_cookies(token, client)
     return {"ok": True, **data}
 
@@ -681,18 +873,30 @@ def timetable(
         log.debug("课表命中缓存：xnm=%s xqm=%s token=%s…", xnm, xqm, token[:8])
         return {"ok": True, **cached}
     log.debug("请求课表：xnm=%s xqm=%s token=%s…", xnm, xqm, token[:8])
+
+    owner, ev = _claim_flight(key)
+    if not owner and ev.wait(_FLIGHT_WAIT_MAX):
+        cached = _cache_get(key)
+        if cached is not None:
+            _refresh_cookies(token, client)
+            log.debug("课表沿用并发请求的结果：xnm=%s xqm=%s token=%s…", xnm, xqm, token[:8])
+            return {"ok": True, **cached}
     try:
-        raw = client.timetable(xnm, xqm)
-    except JwxtError as exc:
-        log.warning("拉取课表失败：xnm=%s xqm=%s %s", xnm, xqm, exc)
-        raise HTTPException(502, str(exc)) from exc
-    except httpx.HTTPError as exc:
-        log.error("拉取课表时网络失败：xnm=%s xqm=%s %s: %s", xnm, xqm, type(exc).__name__, exc)
-        raise HTTPException(502, f"教务接口网络错误：{type(exc).__name__}") from exc
+        try:
+            raw = client.timetable(xnm, xqm)
+        except JwxtError as exc:
+            log.warning("拉取课表失败：xnm=%s xqm=%s %s", xnm, xqm, exc)
+            raise HTTPException(502, str(exc)) from exc
+        except httpx.HTTPError as exc:
+            log.error("拉取课表时网络失败：xnm=%s xqm=%s %s: %s", xnm, xqm, type(exc).__name__, exc)
+            raise HTTPException(502, f"教务接口网络错误：{type(exc).__name__}") from exc
+        data = tt.normalize(raw)
+        data["term"] = {"xnm": xnm, "xqm": xqm, "label": f"{xnm} 学年 · {tt_map(xqm)}"}
+        _cache_put(key, data)
+    finally:
+        if owner:
+            _release_flight(key, ev)
     _refresh_cookies(token, client)
-    data = tt.normalize(raw)
-    data["term"] = {"xnm": xnm, "xqm": xqm, "label": f"{xnm} 学年 · {tt_map(xqm)}"}
-    _cache_put(key, data)
     log.debug("课表规整完成：%d 门课，最大周次 %s", data["meta"]["course_count"], data["meta"]["max_week"])
     return {"ok": True, **data}
 

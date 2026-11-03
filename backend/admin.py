@@ -157,11 +157,12 @@ def admin_logout(authorization: str | None = Header(default=None)) -> dict[str, 
 @router.get("/stats")
 def admin_stats(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _require(authorization)
-    data = audit.store().snapshot()
     _prune_tokens()  # 先把过期的清掉，别把已失效的令牌算进"在线"
     with _lock:
-        data["cards"]["admin_online"] = len(_tokens)
-    return {"ok": True, **data}
+        online = len(_tokens)
+    data = audit.store().snapshot()
+    # snapshot() 每次可能返回同一个缓存对象，别就地改它，否则会污染别人的响应
+    return {"ok": True, **data, "cards": {**data["cards"], "admin_online": online}}
 
 
 @router.get("/logs")

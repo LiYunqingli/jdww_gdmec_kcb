@@ -11,18 +11,32 @@
 
 所以"想看全部细节"只改 `logging.level` 一个值就够；环境变量 `KCB_LOG_LEVEL` 优先级更高，
 方便临时排查而不动文件。
+
+**写盘是异步的**：root 上挂的是 QueueHandler，真正的 console / 文件 handler 跑在
+QueueListener 的线程里。原来 RotatingFileHandler 是同步写，DEBUG 级别下一个请求
+要往磁盘写好几条，这条 IO 直接卡在请求线程上（机械盘 / 同步目录会明显变慢）。
+审计事件（audit.py）早就这么做了，日志这条链路补上。
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import queue
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from typing import Any
 
 from . import config
 
 _HANDLER_TAG = "_kcb_handler"
+
+# 队列上限：磁盘真卡住时宁可丢日志，也不能把内存吃掉。
+# 超了静默丢弃并偶尔提示一句，见 _DropQueueHandler。
+_QUEUE_MAX = 20000
+
+_listener: QueueListener | None = None
+_atexit_done = False
 
 _LEVELS = {
     "CRITICAL": logging.CRITICAL,
@@ -74,12 +88,68 @@ def _enabled(flag: Any, default: bool = True) -> bool:
     return default if not isinstance(flag, bool) else flag
 
 
+class _DropQueueHandler(QueueHandler):
+    """队列满时静默丢一条，别像默认那样往 stderr 刷 traceback（会滚成雪崩）。"""
+
+    def __init__(self, q: queue.Queue) -> None:
+        super().__init__(q)
+        self._dropped = 0
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            self._dropped += 1
+            if self._dropped == 1 or self._dropped % 1000 == 0:
+                # 这里只能直接写 stderr：再走 logging 会自己套自己
+                print(f"[kcb] 日志队列已满，累计丢弃 {self._dropped} 条", file=sys.stderr)
+
+
+def _stop_listener() -> None:
+    """把队列里剩下的记录写完再退出（QueueListener.stop 会先清空队列）。"""
+    global _listener
+    listener = _listener
+    if listener is None:
+        return
+    _listener = None
+    try:
+        listener.stop()
+    except Exception:  # noqa: BLE001
+        pass
+    # 真实 handler 只被 listener 引用，root 上找不到它们，得自己关
+    for handler in listener.handlers:
+        try:
+            handler.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _install_async(handlers: list[logging.Handler]) -> None:
+    """把真实 handler 交给后台线程，root 上只留一个入队的 handler。"""
+    global _listener, _atexit_done
+    root = logging.getLogger()
+    if not handlers:
+        root.addHandler(logging.NullHandler())
+        return
+    q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
+    listener = QueueListener(q, *handlers, respect_handler_level=True)
+    listener.start()
+    handler = _DropQueueHandler(q)
+    setattr(handler, _HANDLER_TAG, True)
+    root.addHandler(handler)
+    _listener = listener
+    if not _atexit_done:
+        _atexit_done = True
+        atexit.register(_stop_listener)
+
+
 def setup_logging(force: bool = False) -> logging.Logger:
     """建 handler，幂等。重复调用不会叠加 handler。"""
     root = logging.getLogger()
     if not force and any(getattr(h, _HANDLER_TAG, False) for h in root.handlers):
         return logging.getLogger("kcb")
 
+    _stop_listener()
     for handler in [h for h in root.handlers if getattr(h, _HANDLER_TAG, False)]:
         root.removeHandler(handler)
         handler.close()
@@ -88,6 +158,8 @@ def setup_logging(force: bool = False) -> logging.Logger:
     datefmt = str(config.get("logging.date_format") or "%Y-%m-%d %H:%M:%S")
     env_level = os.environ.get("KCB_LOG_LEVEL", "").strip()
     global_level = parse_level(env_level or config.get("logging.level"), logging.INFO)
+
+    built: list[logging.Handler] = []
 
     console_cfg = config.get("logging.console") or {}
     if _enabled(console_cfg.get("enabled")):
@@ -98,8 +170,7 @@ def setup_logging(force: bool = False) -> logging.Logger:
         handler = logging.StreamHandler(stream)
         handler.setLevel(console_level)
         handler.setFormatter(formatter)
-        setattr(handler, _HANDLER_TAG, True)
-        root.addHandler(handler)
+        built.append(handler)
 
     file_cfg = config.get("logging.file") or {}
     if _enabled(file_cfg.get("enabled")):
@@ -116,16 +187,17 @@ def setup_logging(force: bool = False) -> logging.Logger:
             )
             handler.setLevel(file_level)
             handler.setFormatter(logging.Formatter(fmt, datefmt))
-            setattr(handler, _HANDLER_TAG, True)
-            root.addHandler(handler)
+            built.append(handler)
         except OSError as exc:
             logging.getLogger("kcb.log").warning("日志文件不可用（%s）：%s", path, exc)
 
-    if not root.handlers:
-        root.addHandler(logging.NullHandler())
-
     # 总闸。handler 上的 level 只能更严，想放宽必须动这里
     root.setLevel(global_level)
+
+    for handler in built:
+        setattr(handler, _HANDLER_TAG, True)
+    _install_async(built)
+
     logging.captureWarnings(True)
 
     # 第三方库降噪，别让 httpx 的每条请求都刷屏

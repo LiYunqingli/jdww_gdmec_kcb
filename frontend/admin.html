@@ -547,7 +547,7 @@ pre.logtail {
       { k: "今日登录", v: fmt(c.logins_today), s: "失败 " + fmt(c.fails_today) + " 次" },
       { k: "登录成功率", v: c.success_rate + "<small>%</small>", s: "基于今日 " + fmt(c.logins_today + c.fails_today) + " 次尝试", alert: c.success_rate > 0 && c.success_rate < 75 },
       { k: "今日请求", v: fmt(c.requests_today), s: "错误 " + fmt(c.errors_today) + "（" + c.error_rate + "%）", alert: c.error_rate > 5 },
-      { k: "平均耗时", v: c.avg_ms + "<small>ms</small>", s: "P95 " + c.p95_ms + " ms" },
+      { k: "平均耗时", v: c.avg_ms + "<small>ms</small>", s: "今日 P95 " + c.p95_ms + " ms" },
       { k: "今日峰值", v: c.peak_hour, s: fmt(c.peak_hour_count) + " 次请求" },
       { k: "管理后台登录", v: fmt(c.admin_logins), s: "当前在线 " + fmt(c.admin_online || 0) }
     ];

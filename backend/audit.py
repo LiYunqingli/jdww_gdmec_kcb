@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import os
@@ -81,6 +82,9 @@ class AuditStore:
         self._fh: Any = None
         self._writer: threading.Thread | None = None
         self._dropped = 0
+        # 聚合结果缓存：仪表盘轮询一次要算十几毫秒，没必要每次都重算
+        self._snap: tuple[float, dict[str, Any]] | None = None
+        self._snap_lock = threading.Lock()
         if enabled:
             self._load()
             self._start_writer()
@@ -181,10 +185,13 @@ class AuditStore:
     def _write_batch(self, batch: list[bytes]) -> None:
         payload = b"".join(batch)
         try:
-            if self._size and self._size + len(payload) > self.max_bytes:
+            # 不再用 "self._size and ..."：文件不存在 / 刚轮转完 _size 是 0，
+            # 那样第一批（尤其是超大的一批）永远不会触发轮转。
+            # 实际要不要轮转交给 _rotate 按真实文件大小判断。
+            if self._size + len(payload) > self.max_bytes:
                 self._close_handle()  # Windows 上文件被占着换不了名
                 self._rotate()
-                self._size = 0
+                self._size = self.path.stat().st_size if self.path.exists() else 0
             if self._fh is None:
                 self._open_handle()
             self._fh.write(payload)
@@ -201,10 +208,12 @@ class AuditStore:
         """记一条事件。任何失败都只记日志，绝不影响接口本身。"""
         event: dict[str, Any] = {"ts": time.time(), "kind": kind}
         event.update({k: v for k, v in fields.items() if v is not None})
+        if not self.enabled:
+            # 关掉审计就别占内存：原来先 append 再判断，enabled=false 也照样
+            # 攒满 memory_events 条，白吃几十 MB。
+            return event
         with self._lock:
             self._events.append(event)
-        if not self.enabled:
-            return event
         try:
             line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
         except (TypeError, ValueError) as exc:
@@ -216,7 +225,8 @@ class AuditStore:
             self._dropped += 1
             if self._dropped == 1 or self._dropped % 500 == 0:
                 log.warning("事件队列已满，累计丢弃 %d 条（磁盘可能卡住了）", self._dropped)
-        if self._writer is None or not self._writer.is_alive():
+        # 关服务之后就别再自愈了，否则退出阶段又把文件句柄打开
+        if not self._stop.is_set() and (self._writer is None or not self._writer.is_alive()):
             self._start_writer()  # 写线程意外退出后自愈
         return event
 
@@ -243,7 +253,21 @@ class AuditStore:
         """由 app 注册：返回会话数、启动时间等内存状态，避免循环导入。"""
         self._live = provider
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, max_age: float = 2.0) -> dict[str, Any]:
+        """返回仪表盘要的全部聚合结果，2 秒内复用上一次的。
+
+        5000 条事件聚合一次约 13 ms，后台 15 秒轮询一次、开几个标签页就翻几倍；
+        这十几毫秒是实打实占着线程池 worker 的。加个短缓存后重复刷新几乎不要钱。
+        `max_age=0` 关掉缓存（测试用）。
+
+        注意：返回的是共享对象，**调用方要加字段请先 copy**。
+        """
+        now = time.monotonic()
+        with self._snap_lock:
+            cached = self._snap
+            if cached is not None and now - cached[0] < max_age:
+                return cached[1]
+
         live = {}
         if self._live:
             try:
@@ -252,7 +276,10 @@ class AuditStore:
                 log.exception("实时状态提供者异常，仪表盘部分数据将缺失")
         with self._lock:
             events = list(self._events)
-        return build_stats(events, live=live, path=self.path, size=self._size)
+        stats = build_stats(events, live=live, path=self.path, size=self._size)
+        with self._snap_lock:
+            self._snap = (now, stats)
+        return stats
 
     def tail(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
@@ -296,7 +323,7 @@ def build_stats(
     ok_today = [r for r in ok_logins if r[1] == today]
     fail_today = [r for r in logins if not r[0].get("ok") and r[1] == today]
 
-    durations = [r[4] for r in requests]
+    durations = [r[4] for r in req_today]
     err_today = [r for r in req_today if r[3] >= 400]
     total_attempts_today = len(ok_today) + len(fail_today)
 
@@ -373,9 +400,9 @@ def build_stats(
     status_codes = Counter(str(r[3]) if r[3] else "-" for r in requests)
 
     recent_logins = []
-    for e, _day, _hour, _status, ms, _kind in sorted(
-        logins, key=lambda r: _f(r[0].get("ts")), reverse=True
-    )[:60]:
+    for e, _day, _hour, _status, ms, _kind in heapq.nlargest(
+        60, logins, key=lambda r: _f(r[0].get("ts"))
+    ):
         recent_logins.append({
             "ts": _f(e.get("ts")),
             "time": _fmt_ts(_f(e.get("ts"))),
@@ -391,9 +418,9 @@ def build_stats(
         })
 
     recent_requests = []
-    for e, _day, _hour, status, ms, _kind in sorted(
-        requests, key=lambda r: _f(r[0].get("ts")), reverse=True
-    )[:80]:
+    for e, _day, _hour, status, ms, _kind in heapq.nlargest(
+        80, requests, key=lambda r: _f(r[0].get("ts"))
+    ):
         recent_requests.append({
             "ts": _f(e.get("ts")),
             "time": _fmt_ts(_f(e.get("ts"))),
@@ -411,9 +438,9 @@ def build_stats(
             "status": status,
             "ms": round(ms),
         }
-        for e, _day, _hour, status, ms, _kind in sorted(
-            requests, key=lambda r: r[4], reverse=True
-        )[:10]
+        for e, _day, _hour, status, ms, _kind in heapq.nlargest(
+            10, requests, key=lambda r: r[4]
+        )
     ]
 
     peak_hour, peak_count = ("-", 0)

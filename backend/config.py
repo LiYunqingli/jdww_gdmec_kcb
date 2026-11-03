@@ -25,7 +25,9 @@ DEFAULTS: dict[str, Any] = {
         "port": 8000,
         "title": "课表代理",
         "version": "1.0",
-        "cors_origins": ["*"],
+        # 跨域白名单。默认空 = 不开放（前端和接口同源，本来就不需要）。
+        # 别写 ["*"]：那等于让任何网页都能在用户浏览器里调这个代理。
+        "cors_origins": [],
     },
     "logging": {
         "level": "DEBUG",
@@ -58,6 +60,14 @@ DEFAULTS: dict[str, Any] = {
         "single": True,
         # 空闲多久算过期（小时）：多久没用就要求重新登录。填 0 = 永不过期
         "idle_timeout_hours": 168,
+        # 会话总数上限：Cookie 通道不互相顶，不封顶会被反复登录堆满内存和连接池
+        "max_sessions": 512,
+    },
+    "login": {
+        # 学生端账号密码登录的限流：同一 IP 在窗口内失败这么多次就锁一会儿。
+        # 管理后台有自己的一套（admin.max_login_fails），两边分开算。
+        "max_fails": 8,
+        "fail_window_minutes": 10,
     },
     "http": {
         "timeout": 25,

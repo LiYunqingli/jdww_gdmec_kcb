@@ -252,6 +252,7 @@ async function boot() {
 
   initStartDate();
   await loadTimetable();
+  startNowTicker();
 
   // 第一次进来自动走一遍引导；等布局和课表都落定再开始，免得框错位置
   if (!tourSeen()) {
@@ -501,6 +502,7 @@ function renderGrid() {
     const el = document.createElement("button");
     el.type = "button";
     el.className = `course k${paletteOf(c.name)}` + (span < 2 ? " tight" : "") + (ongoing ? " is-now" : "");
+    el.dataset.id = c.id;
     el.style.gridRow = `${start + 1} / span ${span}`;
     el.style.gridColumn = String(c.weekday + 1);
     const lane = lanes.get(c.id);
@@ -687,6 +689,57 @@ function renderNow() {
   bar.innerHTML = html;
   bar.hidden = !html;
 }
+
+/* 顶部这条和"正在进行"的高亮都要跟着时间走。
+   只在 render() 时算一次的话，页面停在"还剩 35 分钟"就再也不变了。
+   这里每分钟只改 class / 文本，不重建 DOM——重建会把焦点和滚动位置一起丢掉。 */
+function refreshNowFlags() {
+  const now = nowMinutes();
+  const live = state.week === state.todayWeek;
+  const wd = realWeekday();
+  const ongoing = new Set();
+  if (live) {
+    state.courses.forEach((c) => {
+      if (c.weekday !== wd || !inWeek(c, state.week)) return;
+      const a = slotOf(c.start);
+      const b = slotOf(c.end);
+      if (a && b && now >= toMin(a.start) && now <= toMin(b.end)) ongoing.add(c.id);
+    });
+  }
+  $$(".course").forEach((el) => el.classList.toggle("is-now", ongoing.has(el.dataset.id)));
+  $$(".ag-card", $("agenda")).forEach((el) => {
+    const on = ongoing.has(el.dataset.id);
+    el.classList.toggle("is-now", on);
+    const flag = el.querySelector(".ag-nowflag");
+    if (on && !flag) el.insertAdjacentHTML("afterbegin", '<span class="ag-nowflag">正在进行</span>');
+    else if (!on && flag) flag.remove();
+  });
+}
+
+let nowTimer = 0;
+function startNowTicker() {
+  clearTimeout(nowTimer);
+  const arm = () => {
+    // 对齐到下一分钟的整数秒，别让"还剩 X 分钟"和真实时间差半分钟
+    const wait = 60 - new Date().getSeconds();
+    nowTimer = setTimeout(tick, (wait > 0 ? wait : 60) * 1000);
+  };
+  const tick = () => {
+    if (!$("app-view").hidden) {
+      renderNow();
+      refreshNowFlags();
+    }
+    arm();
+  };
+  arm();
+}
+
+document.addEventListener("visibilitychange", () => {
+  // 后台标签页的定时器会被浏览器节流，切回来先补一次
+  if (document.hidden || $("app-view").hidden) return;
+  renderNow();
+  refreshNowFlags();
+});
 
 /* ---------------- 实践环节 ---------------- */
 function renderPractices() {
@@ -1099,11 +1152,16 @@ function mockApi(path) {
     try { await boot(); } catch (err) { showLogin(err.message); }
     return;
   }
-  if (!state.view) state.view = store.view || (mqlWide.matches ? "week" : "day");
   if (!store.token) return showLogin("");
   try {
     await boot();
-  } catch {
-    showLogin("");
+  } catch (err) {
+    // api() 在 401 时已经把具体原因写进提示了（"登录已过期" / "账号在别处登录"），
+    // 这里再用空串调一次 showLogin 会把它盖掉——只在真的没有提示时才兜底。
+    if (!err || err.message !== "unauthorized") {
+      showLogin(err && err.message ? err.message : "");
+    } else if (!$("login-msg").textContent) {
+      showLogin("登录已失效，请重新登录");
+    }
   }
 })();

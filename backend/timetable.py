@@ -124,20 +124,36 @@ def _mask_span(mask: Any) -> tuple[int, int] | None:
 
 
 def parse_span(item: dict[str, Any]) -> tuple[int, int]:
-    """取课程的节次跨度：优先 jcs 文本，其次 jcma 掩码，最后 jc 文本。"""
-    for key in ("jcs", "jc"):
-        txt = str(item.get(key) or "")
-        m = re.search(r"(\d+)\s*-\s*(\d+)", txt)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-            return (min(a, b), max(a, b))
-        m = re.search(r"(\d+)", txt)
-        if m:
-            v = int(m.group(1))
-            return (v, v)
+    """取课程的节次跨度：优先 jcs 文本，其次 jcma 掩码，最后 jc 文本。
+
+    jcs 是一整段（"1-4"），jcma 是同一段的位掩码，两者等价；
+    jc 只是**当前单元格**（"1-2节"），一门 4 节连堂课会被拆成两行。
+    所以 jc 必须排在 jcma 后面——否则 jcs 一旦缺失（教务改版就可能），
+    整段就被降级成两个半段，课表上出现两块并排的同一门课。
+    """
+    txt = str(item.get("jcs") or "")
+    m = re.search(r"(\d+)\s*-\s*(\d+)", txt)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        return (min(a, b), max(a, b))
+    m = re.search(r"(\d+)", txt)
+    if m:
+        v = int(m.group(1))
+        return (v, v)
+
     span = _mask_span(item.get("jcma"))
     if span:
         return span
+
+    txt = str(item.get("jc") or "")
+    m = re.search(r"(\d+)\s*-\s*(\d+)", txt)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        return (min(a, b), max(a, b))
+    m = re.search(r"(\d+)", txt)
+    if m:
+        v = int(m.group(1))
+        return (v, v)
     return (0, 0)
 
 
