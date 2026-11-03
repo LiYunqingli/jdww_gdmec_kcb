@@ -1120,6 +1120,34 @@ textarea { resize: vertical; font-size: 13px; line-height: 1.55; font-family: va
 }
 .tour-btn-primary:hover:not(:disabled) { background: var(--ink); color: var(--on-ink); filter: brightness(1.15); }
 
+/* ---------------- 悬浮入口（GitHub） ---------------- */
+.gh-float {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  line-height: 1;
+  text-decoration: none;
+  opacity: .62;
+  transition: opacity .16s ease, color .16s ease;
+}
+.gh-float:hover,
+.gh-float:focus-visible {
+  opacity: 1;
+  color: var(--ink);
+}
+.gh-float-icon { width: 18px; height: 18px; flex: none; fill: currentColor; }
+
+@media (max-width: 560px) {
+  .gh-float { right: 14px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); gap: 6px; font-size: 11px; }
+  .gh-float-icon { width: 17px; height: 17px; }
+}
+
 @media (max-width: 560px) {
   .tour-card:not(.is-center) { border-radius: 4px; }
   .tour-title { font-size: 16px; }
@@ -1194,6 +1222,6 @@ textarea { resize: vertical; font-size: 13px; line-height: 1.55; font-family: va
 }
 
 @media print {
-  .masthead, .nowbar, .daystrip, .login-meta, .overlay, .tour { display: none !important; }
+  .masthead, .nowbar, .daystrip, .login-meta, .overlay, .tour, .gh-float { display: none !important; }
   body { background: #fff; }
 }
