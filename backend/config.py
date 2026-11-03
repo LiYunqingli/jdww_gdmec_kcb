@@ -58,7 +58,7 @@ DEFAULTS: dict[str, Any] = {
     "session": {
         # 同一账号只保留最新一个会话：再次登录会把旧令牌顶下线
         "single": True,
-        # 空闲多久算过期（小时）：多久没用就要求重新登录。填 0 = 永不过期
+        # 空闲多少小时算过期，填 0 = 永不过期
         "idle_timeout_hours": 168,
         # 会话总数上限：Cookie 通道不互相顶，不封顶会被反复登录堆满内存和连接池
         "max_sessions": 512,

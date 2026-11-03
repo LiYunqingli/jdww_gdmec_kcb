@@ -122,11 +122,10 @@ class JwxtClient:
         return self.http.get(url, **kw)
 
     def _cached_get(self, url: str, ttl: float = 10.0, **kw) -> httpx.Response:
-        """短时间内的同一个页面复用上次响应。
+        """短时间内同一个页面复用上次响应。
 
-        探活（只看页面够不够长）和学生信息（从同一页正则取姓名）以前各拉一次，
-        现在一次就够；教务首页几百 KB，省下的是实打实的一跳往返。
-        只缓存真正有效的大页面，登录失败那种几十字节的错误页不缓存。
+        探活和学生信息读的是同一个首页，教务那边要几百 KB，能省一跳往返。
+        只缓存有效的大页面，登录失败那种几十字节的错误页不缓存。
         """
         now = time.monotonic()
         hit = self._pages.get(url)

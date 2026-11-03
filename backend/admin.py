@@ -31,7 +31,7 @@ _fails: dict[str, list[float]] = {}
 _FAILS_MAX_IPS = 2000
 
 _DEFAULT_PASSWORD = "kcb-admin"
-# 模板里占位的密码同样是"没改过"
+# 模板里的占位密码也算"没改过"
 _PLACEHOLDER_PASSWORDS = {_DEFAULT_PASSWORD, "change-me", ""}
 
 

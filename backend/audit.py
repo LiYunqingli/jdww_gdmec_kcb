@@ -47,12 +47,10 @@ def _pct(values: list[float], q: float) -> float:
 
 
 class AuditStore:
-    """事件库：请求线程只入队，真正的磁盘 IO 全在后台线程。
+    """事件库：请求线程只做入队，磁盘 IO 全在后台线程批量完成。
 
-    原来每条事件都在请求线程里 open/write/close 一次，实测 1.5 ms/条，
-    单线程上限约 665 条/秒，而且这条同步 IO 卡在事件循环上，磁盘一抖整个
-    服务跟着停。现在 record() 只做 append + 入队（约 15 µs），后台线程按
-    flush_interval 批量写，一次 open 写几百行。
+    record() 只 append + 入队（约 15 µs），后台线程按 flush_interval 攒一批写，
+    一次 open 写几百行，避免同步写盘卡住请求线程。
     """
 
     def __init__(
@@ -185,9 +183,7 @@ class AuditStore:
     def _write_batch(self, batch: list[bytes]) -> None:
         payload = b"".join(batch)
         try:
-            # 不再用 "self._size and ..."：文件不存在 / 刚轮转完 _size 是 0，
-            # 那样第一批（尤其是超大的一批）永远不会触发轮转。
-            # 实际要不要轮转交给 _rotate 按真实文件大小判断。
+            # 文件不存在或刚轮转完时 _size 为 0，按真实大小判断要不要轮转
             if self._size + len(payload) > self.max_bytes:
                 self._close_handle()  # Windows 上文件被占着换不了名
                 self._rotate()
@@ -209,9 +205,7 @@ class AuditStore:
         event: dict[str, Any] = {"ts": time.time(), "kind": kind}
         event.update({k: v for k, v in fields.items() if v is not None})
         if not self.enabled:
-            # 关掉审计就别占内存：原来先 append 再判断，enabled=false 也照样
-            # 攒满 memory_events 条，白吃几十 MB。
-            return event
+            return event  # 不入内存，也不落盘
         with self._lock:
             self._events.append(event)
         try:
@@ -254,10 +248,9 @@ class AuditStore:
         self._live = provider
 
     def snapshot(self, max_age: float = 2.0) -> dict[str, Any]:
-        """返回仪表盘要的全部聚合结果，2 秒内复用上一次的。
+        """返回仪表盘要的全部聚合结果，`max_age` 秒内复用上一次的。
 
-        5000 条事件聚合一次约 13 ms，后台 15 秒轮询一次、开几个标签页就翻几倍；
-        这十几毫秒是实打实占着线程池 worker 的。加个短缓存后重复刷新几乎不要钱。
+        聚合一次要十几毫秒，而后台每 15 秒轮询一次、开几个标签页就翻几倍。
         `max_age=0` 关掉缓存（测试用）。
 
         注意：返回的是共享对象，**调用方要加字段请先 copy**。
@@ -298,9 +291,8 @@ def build_stats(
     now = time.time()
     today = _day_of(now)
 
-    # 一次遍历把「哪天 / 几点 / 状态码 / 耗时」全算好。
-    # 原来每条事件被 7 个聚合各调一次 fromtimestamp，5000 条 = 3.5 万次转换；
-    # 现在只做一次，行结构是 (事件, 日期, 小时, 状态码, 耗时ms, 类型)。
+    # 一次遍历把「日期 / 小时 / 状态码 / 耗时」都算好，
+    # 行结构是 (事件, 日期, 小时, 状态码, 耗时ms, 类型)，后面的聚合只读行。
     rows: list[tuple[dict[str, Any], str, int, int, float, str]] = []
     for e in events:
         ts = _f(e.get("ts"))

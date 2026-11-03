@@ -114,9 +114,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 跨域默认关掉：前端和接口同源，本来就不需要 CORS。
-# 原来默认 ["*"]，等于让**任何网页**都能在用户的浏览器里直接调这个代理——
-# 结合 /api/login 去打学校 SSO 就是现成的跳板。要跨域就把来源明确列出来。
+# 跨域默认关掉：前端和接口同源，不需要 CORS。开放 ["*"] 等于允许任何网页
+# 借用户的浏览器调这个代理，配合 /api/login 就能拿去撞学校 SSO。
 _CORS_ORIGINS = [str(o).strip() for o in (config.get("server.cors_origins") or []) if str(o).strip()]
 if _CORS_ORIGINS:
     app.add_middleware(
@@ -129,13 +128,12 @@ if _CORS_ORIGINS:
 _lock = threading.Lock()
 _sessions: dict[str, dict[str, Any]] = {}
 _clients: dict[str, JwxtClient] = {}
-# 被顶下线的令牌：只留最近一批，用来给旧标签页一句准确的话，而不是含糊的"登录已失效"
+# 被顶下线的令牌：留最近一批，好给旧标签页一句准确的提示，而不是含糊的"登录已失效"
 _evicted: dict[str, float] = {}
 _EVICTED_KEEP = 200
 
-# 会话数上限：Cookie 通道用占位账号、彼此不顶（见 COOKIE_PLACEHOLDER），
-# 不封顶的话同一个人反复登录就能一直堆 client 和连接池（每个 client 默认还留 20 条 keepalive）。
-# 超了按最后活动时间淘汰最旧的。
+# 会话数上限：Cookie 通道的会话彼此不顶（见 COOKIE_PLACEHOLDER），
+# 不封顶会随登录次数一直堆 client 和连接池。超出时按最后活动时间淘汰。
 _SESSIONS_MAX_DEFAULT = 512
 _SWEEP_INTERVAL = 60          # 多久扫一次空闲超时的会话
 _last_sweep = 0.0
@@ -156,7 +154,7 @@ def single_session() -> bool:
 
 
 def _session_ttl_seconds() -> float:
-    """空闲多久算过期。配 0 或负数 = 永不过期（回到老行为）。"""
+    """空闲多久算过期（秒）。配 0 或负数表示永不过期。"""
     try:
         hours = float(config.get("session.idle_timeout_hours") or 0)
     except (TypeError, ValueError):
@@ -249,11 +247,7 @@ def _cap_sessions_locked() -> list[JwxtClient]:
 
 
 def _sweep_sessions() -> None:
-    """周期清理空闲超时的会话。
-
-    原来只在有人登录时才 prune：一直没人回来登录，过期会话（连同它的连接池）
-    就会一直躺着，直到下次登录。现在由后台线程每 _SWEEP_INTERVAL 秒扫一次。
-    """
+    """周期清理空闲超时的会话，由持久化线程每 _SWEEP_INTERVAL 秒调用一次。"""
     global _last_sweep
     if not _session_ttl_seconds():
         return  # 配置成永不过期，扫了也白扫
@@ -267,10 +261,8 @@ def _sweep_sessions() -> None:
 
 
 # ---------------- 登录限流 ----------------
-# 管理后台有失败计数，学生登录口原来一个都没有：谁都能拿这个代理去撞学校 SSO，
-# 每次失败还会往审计里写一条。这里按 IP 做同样的窗口计数。
-# 只用在账号密码登录上——Cookie 通道没法爆破（必须给有效 Cookie），
-# 把它也算进来反而会让人因为输错密码连 Cookie 都登不了。
+# 按 IP 做窗口计数，防止有人拿这个代理反复撞学校 SSO。
+# 只覆盖账号密码登录：Cookie 通道没有可爆破的口令，算进来反而会连累正常用户。
 _LOGIN_FAILS_MAX_IPS = 2000
 _login_fails: dict[str, list[float]] = {}
 _rl_lock = threading.Lock()
@@ -374,11 +366,10 @@ _TS_PERSIST_INTERVAL = 300    # 仅仅 ts 变了的话，5 分钟才落一次盘
 
 
 def _save_sessions() -> None:
-    """标记「会话需要落盘」。真正的 IO 交给后台线程，请求线程不碰磁盘。
+    """标记「会话需要落盘」，真正的 IO 交给后台线程，请求线程不碰磁盘。
 
-    原来是每次刷新 cookie 都在 _lock 里把整份 sessions.json 重写一遍
-    （实测 200 会话 3.5 ms，机械盘 / OneDrive 同步目录会成倍恶化），
-    而这些写绝大多数时候内容没变——cookie 集合一样，只有 ts 在动。
+    每次刷新 cookie 都重写整份 sessions.json 太贵，而绝大多数写的内容其实没变
+    （cookie 集合一样，只有 ts 在动）。
     """
     _persist_dirty.set()
 
@@ -555,8 +546,7 @@ def _cache_put(key: tuple[Any, ...], value: Any) -> None:
             for k in [k for k, (exp, _v) in _cache.items() if exp <= now]:
                 _cache.pop(k, None)
             if len(_cache) >= _CACHE_MAX:
-                # 原来这里直接 clear()：一满就全清，所有会话同时失效、
-                # 同时回打教务，等于自己造了一波尖峰。改成淘汰最快到期的那一批。
+                # 整锅清空会让所有会话同时回打教务，只淘汰最快到期的那批
                 victims = sorted(_cache, key=lambda k: _cache[k][0])[: max(1, _CACHE_MAX // 4)]
                 for k in victims:
                     _cache.pop(k, None)
@@ -571,10 +561,8 @@ def _cache_drop_token(token: str) -> None:
 
 
 # ---------------- 并发去重（single-flight） ----------------
-# 同一个 key 的并发首访只放一个人真去打教务，其余人等它的结果。
-# 缓存只有 60 秒，刷两次页面 / 连点两下学年下拉就会对同一份数据发两三个请求，
-# 教务那边一次要几百毫秒到几秒，纯属白打。
-# 键里带 token，所以这不会挡住别人（不同账号互不影响）。
+# 同一个 key 的并发首访只放一个人去打教务，其余人等它的结果。
+# 键里带 token，所以不同账号互不影响。
 _FLIGHT_WAIT_MAX = 30.0
 _inflight: dict[tuple[Any, ...], threading.Event] = {}
 _inflight_lock = threading.Lock()
@@ -771,8 +759,8 @@ def login_cookie(request: Request, payload: dict[str, Any] = Body(...)) -> JSONR
                      label=label or None, **meta)
         return JSONResponse(status_code=502, content={"ok": False, "message": f"网络请求失败：{exc}"})
     except Exception as exc:  # noqa: BLE001
-        # 和账号密码登录一样兜底：Cookie 串畸形之类导致的非预期异常，
-        # 也要先把客户端的连接池关掉，别让它变成一个没人认领的 socket。
+        # 兜底：Cookie 串畸形等非预期异常，也要先关掉连接池，
+        # 别留下一个没人认领的 socket
         client.close()
         cost = time.perf_counter() - started
         log.exception("Cookie 登录出现未预期的错误：label=%s", label or "-")
@@ -834,8 +822,7 @@ def terms(authorization: str | None = Header(default=None)) -> dict[str, Any]:
 
     owner, ev = _claim_flight(key)
     if not owner and ev.wait(_FLIGHT_WAIT_MAX):
-        # 有人正在拉：等它的结果，省一次教务往返。
-        # 等不到（对方失败 / 超时）就自己打一次，退化成原来的行为。
+        # 有人正在拉：等它的结果，省一次教务往返；等不到就自己打一次。
         cached = _cache_get(key)
         if cached is not None:
             _refresh_cookies(token, client)

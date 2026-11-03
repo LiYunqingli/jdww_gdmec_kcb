@@ -262,7 +262,8 @@ async function boot() {
 
 function initStartDate() {
   if (store.startDate) {
-    // 老版本可能存了个非周一的日子，一次性归正，免得输入框和网格各说各话
+    // 存进来的日子可能不是周一，统一归到那一周的周一，
+    // 免得输入框和网格对「现在是第几周」各说各话
     const d = new Date(store.startDate + "T00:00:00");
     store.startDate = isNaN(d.getTime()) ? "" : isoDate(mondayOf(d));
     if (store.startDate) return;
@@ -691,8 +692,7 @@ function renderNow() {
 }
 
 /* 顶部这条和"正在进行"的高亮都要跟着时间走。
-   只在 render() 时算一次的话，页面停在"还剩 35 分钟"就再也不变了。
-   这里每分钟只改 class / 文本，不重建 DOM——重建会把焦点和滚动位置一起丢掉。 */
+   每分钟只改 class / 文本，不重建 DOM——重建会把焦点和滚动位置一起丢掉。 */
 function refreshNowFlags() {
   const now = nowMinutes();
   const live = state.week === state.todayWeek;
@@ -1156,8 +1156,7 @@ function mockApi(path) {
   try {
     await boot();
   } catch (err) {
-    // api() 在 401 时已经把具体原因写进提示了（"登录已过期" / "账号在别处登录"），
-    // 这里再用空串调一次 showLogin 会把它盖掉——只在真的没有提示时才兜底。
+    // 401 的具体原因 api() 已经写进提示了，只有完全没有提示时才兜底
     if (!err || err.message !== "unauthorized") {
       showLogin(err && err.message ? err.message : "");
     } else if (!$("login-msg").textContent) {

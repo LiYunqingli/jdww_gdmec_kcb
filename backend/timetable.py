@@ -18,11 +18,9 @@ from . import config
 log = logging.getLogger("kcb.timetable")
 
 # ---------------- 作息时间 ----------------
-# 一节课多久、课间歇多久、上午/下午/晚上各大节几点打铃，全部在 config.json 的
-# timetable 段里。默认值（学校现行作息）：
-#   period_minutes=40，同大节内两小节课间 10 分钟，每上完两节歇 25 分钟，
-#   上午 4 节 08:30 起、下午 4 节 14:10 起、晚上 4 节 19:00 起。
-# 大节之间的午饭、晚饭时长不写死，由下一个大节的锚点时间自然决定。
+# 作息从 config.json 的 timetable 段读，默认是学校现行作息：
+# 40 分钟一节，同大节内两小节课间 10 分钟、每上完两节歇 25 分钟，
+# 上午 08:30 / 下午 14:10 / 晚上 19:00 起；大节之间的午饭晚饭由下一个锚点自然决定。
 _DEFAULT_SCHEDULE = {
     "period_minutes": 40,
     "break_between_periods": 10,
@@ -128,8 +126,8 @@ def parse_span(item: dict[str, Any]) -> tuple[int, int]:
 
     jcs 是一整段（"1-4"），jcma 是同一段的位掩码，两者等价；
     jc 只是**当前单元格**（"1-2节"），一门 4 节连堂课会被拆成两行。
-    所以 jc 必须排在 jcma 后面——否则 jcs 一旦缺失（教务改版就可能），
-    整段就被降级成两个半段，课表上出现两块并排的同一门课。
+    所以 jc 必须排在 jcma 后面——否则 jcs 一旦缺失，整段就被降级成两个半段，
+    课表上会出现两块并排的同一门课。
     """
     txt = str(item.get("jcs") or "")
     m = re.search(r"(\d+)\s*-\s*(\d+)", txt)

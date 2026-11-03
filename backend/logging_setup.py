@@ -13,9 +13,7 @@
 方便临时排查而不动文件。
 
 **写盘是异步的**：root 上挂的是 QueueHandler，真正的 console / 文件 handler 跑在
-QueueListener 的线程里。原来 RotatingFileHandler 是同步写，DEBUG 级别下一个请求
-要往磁盘写好几条，这条 IO 直接卡在请求线程上（机械盘 / 同步目录会明显变慢）。
-审计事件（audit.py）早就这么做了，日志这条链路补上。
+QueueListener 的线程里。DEBUG 级别下一个请求要写好几条，同步写会直接卡在请求线程上。
 """
 from __future__ import annotations
 
@@ -31,8 +29,7 @@ from . import config
 
 _HANDLER_TAG = "_kcb_handler"
 
-# 队列上限：磁盘真卡住时宁可丢日志，也不能把内存吃掉。
-# 超了静默丢弃并偶尔提示一句，见 _DropQueueHandler。
+# 队列上限：磁盘真卡住时宁可丢日志，也不能把内存吃掉（见 _DropQueueHandler）
 _QUEUE_MAX = 20000
 
 _listener: QueueListener | None = None
